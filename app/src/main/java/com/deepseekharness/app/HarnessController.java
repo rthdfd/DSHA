@@ -137,14 +137,14 @@ public class HarnessController {
         }
     }
 
-    /** 同步停止（等端口关透）：供强重启/插件变更使用；常规杀不净则宽杀 node */
+    /** 同步停止（等端口关透）：供强重启/插件变更使用；常规杀不净则宽杀 node（方括号防自匹配） */
     public void stopWebAndWait() {
         try {
             destroyAllWebProcesses();
             proot.execAndRead(stopWebCommand());
             if (!waitPortClosed(5000)) {
-                proot.execAndRead("pkill -9 -f node 2>/dev/null; pkill -9 -f 'dsh web' 2>/dev/null; "
-                        + "pkill -9 -f 'bin.js' 2>/dev/null; sleep 1; echo done");
+                proot.execAndRead("pkill -9 -f '[n]ode' 2>/dev/null; pkill -9 -f '[d]sh web' 2>/dev/null; "
+                        + "pkill -9 -f '[b]in.js' 2>/dev/null; sleep 1; echo done");
                 waitPortClosed(5000);
             }
         } catch (Throwable ignored) {
@@ -1574,8 +1574,11 @@ public class HarnessController {
     private String stopWebCommand() {
         // 兼容源码模式（bin.js web）与 RC6 模式（dsh web）
         // 先杀看门狗，否则 watchdog 会把 WebUI 又拉起来
-        return "pkill -f dsh-watchdog.sh 2>/dev/null; "
-             + "pkill -f 'bin.js web' 2>/dev/null; pkill -f 'dsh web' 2>/dev/null; echo stopped";
+        // 关键：方括号技巧 [d]/[b] 让模式文本自身不含字面量——否则 pkill 会命中
+        // 承载本条命令的 bash/proot cmdline（里面就有这些字符串），第一发 pkill
+        // 先把自家命令链杀掉，后面的 pkill 全部执行不到，node 永远没人杀。
+        return "pkill -f '[d]sh-watchdog.sh' 2>/dev/null; "
+             + "pkill -f '[b]in.js web' 2>/dev/null; pkill -f '[d]sh web' 2>/dev/null; echo stopped";
     }
 
     private String statusCommand() {
@@ -1627,7 +1630,7 @@ public class HarnessController {
     public void stopWebViaTermux() {
         try {
             TermuxBridge.runScript(appContext,
-                    "pkill -f 'bin.js web' 2>/dev/null; echo stopped", null);
+                    "pkill -f '[b]in.js web' 2>/dev/null; echo stopped", null);
         } catch (Throwable ignored) {
         }
     }
@@ -1690,12 +1693,12 @@ public class HarnessController {
     private void doStartWeb() {
         final Process p;
         try {
-            // 启动前预检：端口仍被占 → 深杀残留（根治 EADDRINUSE）
+            // 启动前预检：端口仍被占 → 深杀残留（根治 EADDRINUSE；方括号模式防 pkill 自匹配）
             if (isWebPortUp(400)) {
                 destroyAllWebProcesses();
                 proot.execAndRead(stopWebCommand());
                 if (!waitPortClosed(4000)) {
-                    proot.execAndRead("pkill -9 -f node 2>/dev/null; pkill -9 -f 'bin.js' 2>/dev/null; sleep 1; echo done");
+                    proot.execAndRead("pkill -9 -f '[n]ode' 2>/dev/null; pkill -9 -f '[b]in.js' 2>/dev/null; sleep 1; echo done");
                     waitPortClosed(4000);
                 }
             }
@@ -1726,6 +1729,9 @@ public class HarnessController {
         Thread watcher = new Thread(() -> onWebProcessExit(p), "dsha-web-watcher");
         watcher.setDaemon(true);
         watcher.start();
+        // 拉起动作已完成：清 busy/错误状态（启动起的端口就绪与否由启动页 tick 探测呈现），
+        // 否则 setProgress 置的 busy 永远不复位，状态栏被钉死在「正在启动 Web UI」
+        setState("", 0, "", "", false);
     }
 
     /** web 进程保活 + 退出收尾：阻塞读输出保持 proot/node 存活；退出后清状态并按需上报。 */

@@ -197,12 +197,19 @@ public class LaunchFragment extends Fragment {
         }, "dsha-launch-tick").start();
     }
 
+    /**
+     * 运行状态指示只信两样东西（根治"指示不准确"）：
+     *  1. 端口探测结果 up —— 服务器真实可访问才是"运行中"；
+     *  2. 本地过渡态 starting —— 用户刚点过启动/重启、探测还没起来的窗口期。
+     * 不再用 c.isWebRunning() 兜底：它只表示上次 startWeb 的 proot 进程没退出，
+     * node 内部挂死/未绑端口时照样会谎报成"启动中"。
+     */
     private void applyRunUi(boolean up) {
         if (up) {
             runDot.setTextColor(requireContext().getColor(R.color.ok));
             runState.setText("DSH 运行中");
             startBtn.setText("进入");
-        } else if (starting || c.isWebRunning()) {
+        } else if (starting) {
             runDot.setTextColor(requireContext().getColor(R.color.warn));
             runState.setText("DSH 启动中");
             startBtn.setText("启动");
@@ -268,6 +275,10 @@ public class LaunchFragment extends Fragment {
     private void refreshHint() {
         if (!isAdded() || statusText == null) return;
         if (c.getError() != null && !c.getError().isEmpty()) {
+            // 启动/重启失败：退出"启动中"假态，圆点跟随最近一次真实探测
+            starting = false;
+            enterWhenReady = false;
+            applyRunUi(webReady);
             statusText.setText(c.getError());
         } else if (c.getMessage() != null && !c.getMessage().isEmpty()) {
             statusText.setText(c.getMessage());
