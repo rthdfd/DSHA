@@ -45,6 +45,9 @@ Key files under `app/src/main/java/com/deepseekharness/app/`:
 | `HarnessController.java` | ~6200-line business core (install steps, config, Web lifecycle, backup/restore, device bridge). Read before editing; make minimal patches |
 | `PluginController.java` | Plugins + plugin market, split out of the controller in 2026-08 (1668 lines). Coupling to the host is deliberately narrow: `Context`, `ProotBootstrap`, and seven host methods — see its javadoc before widening it. UI callers go through the forwarding block on `HarnessController` |
 | `ShellQuote.java` | POSIX single-quote escaping — the **only** shell-quoting implementation in the tree. Values from the plugin market reach `bash -c` through it, so it carries round-trip assertions in `tools/pure-logic-test.sh` |
+| `PnpmEnv.java` | **The** definition of how pnpm is configured inside the container. pnpm 11 stopped reading non-auth settings from `.npmrc`, so every place that shells out to pnpm takes its settings from here (`pnpm_config_*` exports, snake_case — camelCase silently does nothing). Adding a fourth writer of `pnpm-workspace.yaml` is the mistake this class exists to prevent |
+| `PnpmError.java` | Classifies pnpm **install** failures and turns them into one plain sentence plus one tappable action. Mirror image of `PluginErrorHint` (which reads dsh **boot** logs). Both are pure logic with real-output samples in `tools/pure-logic-test.sh` — regex over someone else's output rots silently when upstream rewords a line |
+| `TextFile.java` | Read / atomic-write for small config files — the only implementation. Atomic write is not optional: the old "delete then rename" lost the user's whole file if killed in between |
 | `ProotBootstrap.java` | proot/env exec, offline extraction, multi-mirror downloads |
 | `ExtractActivity.java` | First-run offline extraction screen |
 | `BackupManager.java` | Manual + migration backups to `Download/DSHA`, restore |
@@ -74,6 +77,23 @@ Protecting user data across upgrades/reinstalls is split across two spots — ke
 - Disabling renames `name` → `name.disabled`, deletes the dependency, and stashes the original source at `.dsha-src-<name>`.
 - Re-enabling restores the source from the stash. If the stash is gone the caller falls back to `"*"`; `toggleScript()` (in `HarnessController`) must never write `"*"`, `"null"`, or empty into `dependencies` — a `"*"` dependency on a non-npm plugin name breaks `pnpm install`.
 - Market index is `PLUGINS-ALL.md` from `awesome-dsh-plugins`, fetched through mirror URLs with a local cache fallback.
+
+### pnpm 11 配置模型 — 两层，别加第三层
+
+pnpm 11 只从 `.npmrc` 读 auth 与 registry；其余设置必须走 YAML 或环境变量。所以容器里的 pnpm 配置分两层，各管一段：
+
+| 层 | 位置 | 谁写 | 管什么 |
+|---|---|---|---|
+| 基线 | `~/.config/pnpm/config.yaml` | `assets/pnpm-env-fix.sh` | `packageImportMethod=copy`（proot 下硬链接是 `--link2symlink` 模拟的，会留悬空链）、`sideEffectsCache=false`。放全局是因为用户/AI 在内置终端手敲 pnpm 也得对 |
+| 单次 | `pnpm_config_*` 环境变量 | `PnpmEnv.exportScript()` | 临时豁免，例如用户点了「我信得过，现在就装」时的 `minimumReleaseAge=0`。无状态、不落盘、下次安装自动恢复默认防护 |
+
+三条硬规则：
+
+- **每个 shell 出去跑 pnpm 的地方都必须前缀 `PnpmEnv.exportScript(...)`。** 漏一处的症状是「某一条安装路径特有的莫名 ENOENT」，而且不会有任何报错指向配置。
+- **环境变量名必须 snake_case**（`pnpm_config_package_import_method`）。驼峰写法不报错、只是当没设过 —— 所以名字一律由 `PnpmEnv.envName()` 生成，`tools/pure-logic-test.sh` 里有断言。
+- **不要再往 `/root/.dsh/profiles/web/pnpm-workspace.yaml` 加写入方。** 那个文件已经有 dsh 自己和 `PatchToggle.withAllowBuild()`（构建授权）两个写入者。「同一份文件多个写入方」是本项目栽过最多的模式 —— issue #36 里 repair 把 `cordis.patch.yml` 拼成非法 YAML、Web 直接起不来，就是它。
+- `minimumReleaseAge` 默认 1440 分钟（1 天）。**不要为了让安装顺畅而全局设 0** —— 那是替所有用户悄悄关掉一层防投毒保护。正确做法见 `PluginFragment.showFreshReleaseDialog()`：说清楚、给「明天再装」和「只对这一个破例」两个选择。
+- 构建授权用 `allowBuilds`（映射），**不是** `onlyBuiltDependencies`（pnpm 11 已移除，写了既不报错也不生效）。
 
 ## Self-healing scripts (`app/src/main/assets/`)
 
