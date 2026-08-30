@@ -1031,12 +1031,26 @@ public class PluginFragment extends Fragment {
     /** 后台装一个插件并把结果显示出来（市场里几条路都用它，别再各写一份线程）。
      *  必须在 UI 线程调用 —— say 与 showInstallResult 都只能在 UI 线程跑。 */
     private void installInBackground(final String pkg, final String display, final String spec) {
-        say("正在安装 " + pkg + " …");
+        installInBackground(pkg, display, spec, false);
+    }
+
+    /**
+     * @param allowFreshRelease 用户已在「刚发布」那一屏点过「现在就装」时为 true。
+     *                          它只随这一次安装传下去，不落盘（见 {@link PnpmEnv}）。
+     */
+    private void installInBackground(final String pkg, final String display, final String spec,
+                                     final boolean allowFreshRelease) {
+        say((allowFreshRelease ? "正在安装（已跳过等待期）" : "正在安装 ") + pkg + " …");
         new Thread(() -> {
-            String out = c.installPlugin(pkg, spec);
-            runOnUiThreadSafely(() -> showInstallResult(pkg, display, out));
+            String out = c.installPlugin(pkg, spec, allowFreshRelease);
+            runOnUiThreadSafely(() -> showInstallResult(pkg, display, out, spec,
+                    // 已经跳过一次还失败，就别再给「现在就装」按钮了 —— 那会让用户
+                    // 在同一个弹窗上反复点，而原因显然不是等待期。
+                    allowFreshRelease ? null
+                            : () -> installInBackground(pkg, display, spec, true)));
         }, "dsha-install").start();
     }
+
 
     /**
      * 市场条目的安装入口：链接先用 {@link GitHubRef} 正确解析。
@@ -1076,26 +1090,55 @@ public class PluginFragment extends Fragment {
             runOnUiThreadSafely(() -> {
                 say(msg.replace('\n', ' '));
                 showInstalled();
-                showCopyableResult("安装结果：" + display, msg);
+                // 子目录插件走的是「clone + 构建」，它的依赖同样可能撞上等待期。
+                // 这里没有可以直接重试的 pnpm 来源，所以只解释、不给「现在就装」——
+                // 给一个点了也没用的按钮比不给更糟。
+                showInstallOutcome("安装结果：" + display, display, msg, null);
             });
         }).start();
     }
 
+    /**
+     * 安装输出的统一出口：先让 {@link PnpmError} 看一眼，认识的失败给人话，
+     * 其余照旧显示可复制的原始输出。
+     *
+     * <p>存在的理由是「同一份判断散落多处」是这个项目反复栽的坑：市场里有四条安装路径
+     * （预检直装 / 任意 spec / 子目录构建 / 本地导入），每条都各写一份结果处理的话，
+     * 下次上游再改错误码就得改四处，漏一处就是那条路静默回到错误诊断。
+     *
+     * @param retryNow 不为 null 时，「刚发布」那一屏会多一个「现在就装」按钮
+     */
+    private void showInstallOutcome(String title, String display, String msg, Runnable retryNow) {
+        if (PnpmError.isFreshRelease(msg)) {
+            showFreshReleaseDialog(display, msg, retryNow);
+            return;
+        }
+        String known = PnpmError.describe(msg);
+        showCopyableResult(title, known.isEmpty() ? msg : known + "\n\n───────\n" + msg);
+    }
+
     /** 按任意 pnpm 来源直接安装（npm / jsr: / gitlab: / 远程 tarball / 本地路径 …）。 */
     private void installBySpec(String display, String spec) {
+        installBySpec(display, spec, false);
+    }
+
+    private void installBySpec(String display, String spec, boolean allowFreshRelease) {
         say("正在安装 " + display + "（" + PluginSpec.describe(PluginSpec.classify(spec)) + "）…");
         final android.content.Context appCtx = requireContext().getApplicationContext();
         new Thread(() -> {
-            String r = c.installPlugin(spec);
+            String r = c.installPlugin(spec, null, allowFreshRelease);
             final String msg = r == null || r.isEmpty() ? "无输出" : r;
             toastOnMain(appCtx, "安装流程结束：" + display);
             runOnUiThreadSafely(() -> {
                 say(msg.replace('\n', ' '));
                 showInstalled();
-                showCopyableResult("安装结果：" + display, msg);
+                showInstallOutcome("安装结果：" + display, display, msg,
+                        allowFreshRelease ? null
+                                : () -> installBySpec(display, spec, true));
             });
         }).start();
     }
+
 
     private void startAutoInstall(String[] it, String owner, String repo) {
         final String display = it[MarketCol.NAME];
@@ -1142,7 +1185,8 @@ public class PluginFragment extends Fragment {
             if ("ok".equals(verdict)) {
                 runOnUiThreadSafely(() -> say("✅ " + display + " 可安装，正在装…"));
                 String out = c.installPlugin(pkg, spec);
-                runOnUiThreadSafely(() -> showInstallResult(pkg, display, out));
+                runOnUiThreadSafely(() -> showInstallResult(pkg, display, out, spec,
+                        () -> installInBackground(pkg, display, spec, true)));
                 return;
             }
             // 其余三态：把结论摆出来，让用户决定
@@ -1218,7 +1262,27 @@ public class PluginFragment extends Fragment {
     }
 
     private void showInstallResult(String pkg, String display, String out) {
+        showInstallResult(pkg, display, out, null, null);
+    }
+
+    /**
+     * 安装结果弹窗。
+     *
+     * <p>{@code spec} / {@code freshRetry} 不为空时，遇到「版本刚发布被挡住」会多给一个
+     * 重试按钮 —— 见 {@link #showFreshReleaseDialog}。为 null 时退化成纯展示
+     * （导入本地包等场景没有可重试的来源）。
+     */
+    private void showInstallResult(String pkg, String display, String out,
+                                   String spec, Runnable freshRetry) {
         boolean ok = out != null && out.contains("INSTALL_EXIT=0");
+        // 「版本太新被拦下」不是失败，是「还没到时候」。它有确定的原因和一个零成本的
+        // 动作（明天再点），必须优先于通用的失败弹窗 —— 否则用户看到 ❌ 加一屏 pnpm
+        // 堆栈，只会以为这插件坏了或自己手机有问题，而事实是等一天就好。
+        // freshRetry 为 null 时照样走这一屏，只是不给「现在就装」按钮。
+        if (!ok && PnpmError.isFreshRelease(out)) {
+            showFreshReleaseDialog(display, out, freshRetry);
+            return;
+        }
         say((ok ? "✅ 安装成功 " : "❌ 安装失败 ") + display + (ok ? "，刷新页面即可生效" : ""));
         final String text = out == null ? "无输出" : out;
         android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(requireContext())
@@ -1227,6 +1291,7 @@ public class PluginFragment extends Fragment {
                 .setView(buildSelectableMessage(text))
                 .setNeutralButton("复制", (d, w) -> copyToClipboard(text, "安装输出"))
                 .setNegativeButton("关闭", null);
+
         if (ok) {
             b.setPositiveButton("重启 WebUI", (d, w) -> {
                     // 1.5s 延迟回调期间用户可能已离开本页：全程用 applicationContext，
@@ -1250,6 +1315,45 @@ public class PluginFragment extends Fragment {
             // 今天这批故障（自指依赖 ELOOP、装成 monorepo 管理包、缺构建产物成空壳）
             // 全都是「装完之后 profile 被写坏」，退回去比继续在坏状态上试下一个插件有用。
             b.setPositiveButton("撤销这次安装", (d, w) -> undoInstall());
+        }
+        b.show();
+    }
+
+    /**
+     * 「这个版本刚发布，包管理器要等 24 小时」——单独一屏，因为它和其它安装失败
+     * 完全不是一类事。
+     *
+     * <h4>为什么值得单独做一个弹窗</h4>
+     *
+     * <p>pnpm 11 起 {@code minimumReleaseAge} 默认 1440 分钟：新发布的版本 24 小时内
+     * 一律不装，防的是「有人偷偷发个带毒版本、被自动装走」。这条保护本身是对的，
+     * 但它撞上 DSHA 的使用场景就很尴尬 —— 插件市场索引每天由 CI 刷新，
+     * <b>索引里最新收录的插件恰好最可能被它拦住</b>，而拦住之后原来只会给出一屏
+     * pnpm 堆栈加一句「这个插件只支持从 npm registry 安装」的错误诊断。
+     *
+     * <h4>为什么不直接全局关掉</h4>
+     *
+     * <p>把 {@code minimumReleaseAge} 设成 0 装得最顺，但那是替所有用户悄悄关掉一层
+     * 防投毒保护，而他们根本不知道发生了什么。所以做成：默认安全（就等着），
+     * 用户看懂了、并且明确点了「现在就装」，才对<b>这一个插件</b>破例，
+     * 而且只对这一次安装生效（环境变量，不落盘 —— 见 {@link PnpmEnv}）。
+     *
+     * <p>文案刻意不出现 pnpm / registry / minimumReleaseAge 这些词，
+     * 措辞由 {@link PnpmError} 统一给出并有断言钉住。
+     */
+    private void showFreshReleaseDialog(String display, String out, Runnable retryNow) {
+        final String text = out == null ? "无输出" : out;
+        say("⏳ " + display + " 刚发布，还在等待期");
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(requireContext())
+                .setTitle("⏳ 这个插件刚刚发布：" + display)
+                .setMessage(PnpmError.describe(text))
+                // 默认动作（右侧、最显眼）是安全的那个
+                .setPositiveButton("知道了，明天再装", null)
+                .setNegativeButton("看详细输出", (d, w) ->
+                        showCopyableResult("安装输出：" + display, text));
+        // 没有可重试的来源时不放这个按钮 —— 给一个点了也没用的按钮比不给更糟
+        if (retryNow != null) {
+            b.setNeutralButton("我信得过，现在就装", (d, w) -> retryNow.run());
         }
         b.show();
     }

@@ -310,6 +310,11 @@ class PluginController {
      * 轻得多（pnpm 直接跑插件自己的 prepare），所以排在那之前。
      */
     private String allowBuildsAndRetry(String pkg, String spec, String firstOut) {
+        return allowBuildsAndRetry(pkg, spec, firstOut, false);
+    }
+
+    private String allowBuildsAndRetry(String pkg, String spec, String firstOut,
+                                       boolean allowFreshRelease) {
         try {
             java.io.File ws = new java.io.File(proot.getRootfsDir(),
                     "root/.dsh/profiles/web/pnpm-workspace.yaml");
@@ -324,14 +329,21 @@ class PluginController {
                 return "\n\n[想按 dsh 的提示授权构建脚本，但写 pnpm-workspace.yaml 失败]";
             }
             host.logActivity("授权构建脚本 allowBuilds: " + key + "，重试安装 " + pkg);
-            String again = runPluginInstall(spec == null || spec.isEmpty() ? pkg : spec);
+            String again = runPluginInstall(spec == null || spec.isEmpty() ? pkg : spec,
+                    allowFreshRelease);
             return "\n\n[按 dsh 的提示把 " + key.trim() + " 加进 allowBuilds 后重试…]\n" + again;
         } catch (Throwable t) {
             return "";
         }
     }
 
-    /** 从 pnpm/dsh 的输出里抠出它要求授权的那个确切键。 */
+    /**
+     * 从 pnpm/dsh 的输出里抠出它要求授权的那个确切键。
+     *
+     * <p>两种措辞都认：pnpm 10 时代是 {@code Ignored build scripts: <pkg>}，
+     * pnpm 11 起还会直接提 {@code allowBuilds}。多认一种字面量的成本是零，
+     * 而少认一种就是整条自愈路径静默失效。
+     */
     private static String extractAllowBuildKey(String out) {
         if (out == null || out.isEmpty()) return "";
         java.util.regex.Matcher m = java.util.regex.Pattern
@@ -340,41 +352,17 @@ class PluginController {
         return m.find() ? m.group(1).trim() : "";
     }
 
-    /** 读文本文件（读不到给空串）。 */
+
+    /** 读文本文件（读不到给空串）—— 实现在 {@link TextFile}，这里只是保留调用点的可读性。 */
     private String readTextFile(java.io.File f) {
-        try {
-            if (f == null || !f.isFile() || f.length() > 8L * 1024 * 1024) return "";
-            return new String(java.nio.file.Files.readAllBytes(f.toPath()),
-                    StandardCharsets.UTF_8);
-        } catch (Throwable t) {
-            return "";
-        }
+        return TextFile.read(f);
     }
 
-    /**
-     * 原子写：同目录临时文件 + {@code ATOMIC_MOVE}。
-     *
-     * <p>原来是「先 {@code delete()} 目标、再 {@code renameTo()}」—— 那两步之间失败，
-     * 用户手写的整个 patch 文件就<b>没了</b>。rename(2) 本身允许覆盖已存在的文件，
-     * 根本不需要先删，所以那个 delete 是净风险。
-     */
+    /** 原子写。实现在 {@link TextFile}（同一份读写逻辑现在有三个使用方，不再各自复制一份）。 */
     private boolean writeTextAtomic(java.io.File f, String text) {
-        java.io.File tmp = new java.io.File(f.getParentFile(), f.getName() + ".dsha-tmp");
-        try {
-            try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) {
-                os.write(text.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-            }
-            java.nio.file.Files.move(tmp.toPath(), f.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            return true;
-        } catch (Throwable t) {
-            android.util.Log.w("DSHA", "写 " + f.getName() + " 失败: " + t);
-            //noinspection ResultOfMethodCallIgnored
-            tmp.delete();
-            return false;
-        }
+        boolean ok = TextFile.writeAtomic(f, text);
+        if (!ok) android.util.Log.w("DSHA", "写 " + f.getName() + " 失败");
+        return ok;
     }
 
     /**
@@ -2239,7 +2227,7 @@ class PluginController {
     /** registry 上是否有这个包（顺带比对版本，版本一致才值得替换 GitHub 源）。 */
     private boolean npmRegistryHas(String name, String wantVersion) {
         try {
-            String url = "https://registry.npmmirror.com/"
+            String url = PnpmEnv.REGISTRY + "/"
                     + name.replace("/", "%2F");
             String body = httpGetText(url, 6000, 15000);
             if (body == null || body.length() < 20) return false;
@@ -2270,7 +2258,8 @@ class PluginController {
             String owner = ref[0], repo = ref[1];
             String dir = "/root/dsha-plug-" + repo.toLowerCase(java.util.Locale.ROOT)
                     .replaceAll("[^a-z0-9._-]", "-");
-            String cmd = "set -e; rm -rf " + ShellQuote.arg(dir) + "; "
+            String cmd = PnpmEnv.exportScript(false)
+                    + "set -e; rm -rf " + ShellQuote.arg(dir) + "; "
                     + "echo '[1/4] clone…'; "
                     + "(git clone --depth 1 -q " + ShellQuote.arg("https://github.com/" + owner + "/" + repo)
                     + " " + ShellQuote.arg(dir)
@@ -2278,7 +2267,8 @@ class PluginController {
                     + " " + ShellQuote.arg(dir) + "); "
                     + "cd " + ShellQuote.arg(dir) + "; "
                     + "echo '[2/4] 装依赖…'; "
-                    + "npm install --registry=https://registry.npmmirror.com 2>&1 | tail -3; "
+                    + "npm install --registry=" + ShellQuote.arg(PnpmEnv.REGISTRY) + " 2>&1 | tail -3; "
+
                     + "echo '[3/4] 构建（若有 build 脚本）…'; "
                     + "if node -e \"process.exit((require('./package.json').scripts||{}).build?0:1)\" 2>/dev/null; then "
                     + "npm run build 2>&1 | tail -5; fi; "
@@ -2298,6 +2288,18 @@ class PluginController {
      * 自动用 github:owner/repo 重试一次（市场条目多为仅 GitHub 发布的仓库插件）。
      */
     public String installPlugin(String pkg, String fallbackSpec) {
+        return installPlugin(pkg, fallbackSpec, false);
+    }
+
+    /**
+     * 安装插件，可选择放宽「版本发布年龄」门槛。
+     *
+     * @param allowFreshRelease 只在用户看过说明、明确点了「我信得过，现在就装」之后才传 true。
+     *                          pnpm 11 起新发布的版本 24 小时内默认不装（防投毒），
+     *                          这是安全取向的决定，程序不替用户做 —— 详见
+     *                          {@link PnpmError.Kind#FRESH_RELEASE}。豁免只作用于本次安装。
+     */
+    public String installPlugin(String pkg, String fallbackSpec, boolean allowFreshRelease) {
         // single-flight：并发装同一个 profile 会撞 pnpm 的 lockfile 与 store。
         // tryLock 对已持有锁的线程直接成功，所以 installSubdirFromSource 构建完
         // 回头调这里不会自锁。
@@ -2315,13 +2317,14 @@ class PluginController {
             if (installLock.getHoldCount() == 1) {
                 PluginSavepoint.create(proot, host, pkg);
             }
-            return installPluginLocked(pkg, fallbackSpec);
+            return installPluginLocked(pkg, fallbackSpec, allowFreshRelease);
         } finally {
             installLock.unlock();
         }
     }
 
-    private String installPluginLocked(String pkg, String fallbackSpec) {
+    private String installPluginLocked(String pkg, String fallbackSpec, boolean allowFreshRelease) {
+
         if (!isValidPluginSpec(pkg)) {
             return "安装失败：非法插件名/来源：" + (pkg == null ? "null" : pkg);
         }
@@ -2415,13 +2418,13 @@ class PluginController {
             }
         }
 
-        String r = runPluginInstall(spec);
+        String r = runPluginInstall(spec, allowFreshRelease);
         // ENOENT 这类是环境问题而不是包的问题：修掉硬链接配置与残留后重试一次
         if (isPnpmEnvFailure(r)) {
             String fix = host.runAssetScript("pnpm-env-fix.sh", "dsha-pnpm-env-fix.sh", 60_000);
             tried.append("· 第 1 次失败（pnpm 环境问题），已修配置并重试\n");
             r = r + "\n\n[检测到 pnpm 环境问题，已修复并重试]\n"
-                    + (fix == null ? "" : fix.trim() + "\n") + runPluginInstall(spec);
+                    + (fix == null ? "" : fix.trim() + "\n") + runPluginInstall(spec, allowFreshRelease);
         }
         // ── 第 1.5 级：网络故障 → 换镜像源重试同一个包 ──
         // 关键是**不换机制**：网络不好跟「包在哪」无关，换去 git 源只会把
@@ -2430,11 +2433,16 @@ class PluginController {
             tried.append("· 网络故障（不是包不存在），换镜像源重试\n");
             host.logActivity("插件安装遇到网络故障，换镜像源重试：" + spec);
             String alt = proot.execAndRead(
-                    "cd /root/.dsh/profiles/web 2>/dev/null || cd /root/.dsh; "
-                            + "pnpm add --registry=https://registry.npmjs.org "
+                    // registry 走 export 而不是 --registry：pnpm 11 下两者都行，但设置统一
+                    // 从 PnpmEnv 出，才不会又出现「某一条路少配了 packageImportMethod」
+                    // 这种分裂（那正是本轮 bug 的形状）。
+                    PnpmEnv.exportScript(PnpmEnv.REGISTRY_OFFICIAL, allowFreshRelease)
+                            + "cd /root/.dsh/profiles/web 2>/dev/null || cd /root/.dsh; "
+                            + "pnpm add "
                             + ShellQuote.arg(spec) + " 2>&1 | tail -20; echo INSTALL_EXIT=$?",
                     300_000);
             r = r + "\n\n[换用 npm 官方源重试…]\n" + (alt == null ? "无输出" : alt);
+
         }
         // ── 第 2 级：包名找不到 → 用 GitHub 源再试 ──
         if (r != null && registryOnly && !r.contains("INSTALL_EXIT=0")) {
@@ -2447,17 +2455,25 @@ class PluginController {
                 r += "\n[自动回退被忽略：非法来源 " + fallbackSpec + "]";
             } else {
                 tried.append("· registry 里没有，改用 GitHub 源\n");
-                r = "\n[自动回退 GitHub 仓库方式安装…]\n" + runPluginInstall(fallbackSpec);
+                r = "\n[自动回退 GitHub 仓库方式安装…]\n"
+                        + runPluginInstall(fallbackSpec, allowFreshRelease);
             }
         }
-        // ── 第 2.5 级：prepare 脚本被 pnpm 挡住 → 按 dsh 给的修法写 allowBuilds 再重试 ──
-        // 这条比自己 clone+构建 轻得多（pnpm 直接跑插件的 prepare），所以排在它前面。
+        // ── 第 2.5 级：prepare / build 脚本被 pnpm 挡住 → 授权后重试 ──
+        // 这条比自己 clone+构建 轻得多（pnpm 直接跑插件的脚本），所以排在它前面。
+        //
+        // 判据里加 PnpmError.needsBuildApproval：pnpm 11 把这类失败统一成
+        // ERR_PNPM_IGNORED_BUILDS，而原来只认输出里出现 "allowBuilds" 或
+        // "prepare script" 两个字面量 —— 上游改一次措辞就整条哑掉。
         if (r != null && !r.contains("INSTALL_EXIT=0")
-                && (r.contains("allowBuilds") || r.contains("prepare script"))) {
-            tried.append("· prepare 脚本被 pnpm 挡住，按 dsh 的提示授权后重试\n");
-            String retry = allowBuildsAndRetry(pkg, fallbackSpec != null ? fallbackSpec : spec, r);
+                && (PnpmError.needsBuildApproval(r)
+                        || r.contains("allowBuilds") || r.contains("prepare script"))) {
+            tried.append("· 构建脚本被 pnpm 挡住，按 dsh 的提示授权后重试\n");
+            String retry = allowBuildsAndRetry(pkg, fallbackSpec != null ? fallbackSpec : spec, r,
+                    allowFreshRelease);
             if (!retry.isEmpty()) r = r + retry;
         }
+
         // ── 第 3 级：仍然是 git-hosted 的 prepare/ENOENT → 自己 clone、构建、link ──
         // 这条路完全不经过 pnpm 的 store/tmp 与 prepare，所以能绕开那个上游 bug。
         // 慢（要装 devDeps 并构建），所以放最后。
@@ -2473,11 +2489,18 @@ class PluginController {
         }
         if (tried.length() > 0 && r != null && !r.contains("INSTALL_EXIT=0")) {
             r = r + "\n\n=== 试过的几条路 ===\n" + tried;
-            // pnpm ≥11 默认拒绝 git 依赖的 prepare 脚本 —— 上游生态已经形成共识：
-            // 从 git URL 装插件这条路基本走不通了。dsh-TUI（生态里最火的插件）
-            // 在自己 README 里就写着「Git URL 安装不受支持，请安装 registry 包」。
-            // 用户看到一堆 pnpm 堆栈时最需要知道的就是这句话，而不是去猜自己环境坏了。
-            if (isPnpmEnvFailure(r) || r.contains("prepare")) {
+            // 先问 PnpmError 认不认识这个失败。它认识的几类都有**确定**的原因和动作，
+            // 必须优先于下面那段启发式猜测 —— 否则「版本刚发布 24 小时内」会被说成
+            // 「这个插件只支持从 npm registry 安装」，那是一句完全错误的结论：
+            // 用户被告知装不了，而事实是等一天、或点一下就能装。
+            String known = PnpmError.describe(r);
+            if (!known.isEmpty()) {
+                r = r + "\n" + known + "\n";
+            } else if (isPnpmEnvFailure(r) || r.contains("prepare")) {
+                // pnpm ≥11 默认拒绝 git 依赖的 prepare 脚本 —— 上游生态已经形成共识：
+                // 从 git URL 装插件这条路基本走不通了。dsh-TUI（生态里最火的插件）
+                // 在自己 README 里就写着「Git URL 安装不受支持，请安装 registry 包」。
+                // 用户看到一堆 pnpm 堆栈时最需要知道的就是这句话，而不是去猜自己环境坏了。
                 r = r + "\n很可能这个插件**只支持从 npm registry 安装**：\n"
                         + "pnpm 11 起默认拒绝执行 git 依赖的 prepare 脚本，"
                         + "而多数插件的 git 仓库里不含构建产物（dist），装了也用不了。\n"
@@ -2486,6 +2509,7 @@ class PluginController {
             }
             r = r + "\n如果都失败，把上面的输出贴到 DSHA 的 GitHub issue，我们跟进。";
         }
+
         if (r != null && r.contains("INSTALL_EXIT=0")) {
             // 装完当场查双副本：pnpm 可能刚把 @deepseek-ai/* 物理复制进 profile，
             // 那会让下次启动后所有工具调用失败
@@ -2647,17 +2671,25 @@ class PluginController {
         if (!mainReady) {
             // 2) 装依赖。pnpm workspace 必须在**仓库根**装 —— 子目录单独装会缺 workspace
             // 内部依赖，tsc 一跑就是一屏 Cannot find module @deepseek-ai/…
-            r = proot.execAndRead("cd " + ShellQuote.arg(repoDir)
+            //
+            // 前缀 PnpmEnv：这条路径同样跑 pnpm，同样需要 packageImportMethod=copy
+            // （proot 下硬链接是模拟的）。少配一条就是「某一条安装路径特有的莫名 ENOENT」
+            // —— 设置分裂正是本轮 bug 的形状，所以每个跑 pnpm 的地方都从同一处取配置。
+            r = proot.execAndRead(PnpmEnv.exportScript(false)
+                    + "cd " + ShellQuote.arg(repoDir)
                     + " && pnpm install --prefer-offline 2>&1; echo STEP_EXIT=$?", 900_000);
             if (r == null || !r.contains("STEP_EXIT=0")) {
                 return "装依赖失败（在 " + ref.repo + " 仓库根跑 pnpm install）：\n" + lastLines(r, 20)
+                        + explainKnownPnpmFailure(r)
                         + "\n\n这一步要联网拉 monorepo 的全部依赖，网络不稳时容易断，可以重试。";
             }
             // 3) 构建。先按 workspace 包名过滤（作者 README 的写法），失败再退到子目录里直接 build
-            r = proot.execAndRead("cd " + ShellQuote.arg(repoDir)
+            r = proot.execAndRead(PnpmEnv.exportScript(false)
+                    + "cd " + ShellQuote.arg(repoDir)
                     + " && ( pnpm --filter " + ShellQuote.arg(name) + " build 2>&1"
                     + " || ( cd " + ShellQuote.arg(sub) + " && pnpm build 2>&1 ) )"
                     + "; echo STEP_EXIT=$?", 900_000);
+
             boolean built = r != null && r.contains("STEP_EXIT=0");
             mainReady = main.isEmpty() || new java.io.File(subHost, main).isFile();
             if (!built && !mainReady) {
@@ -3109,20 +3141,47 @@ class PluginController {
                 + "单独解析。只要下面写着安装成功，插件就是装好了。";
     }
 
+    /** 单次插件安装执行（默认不放宽发布年龄门槛）。 */
     private String runPluginInstall(String pkg) {
+        return runPluginInstall(pkg, false);
+    }
+
+    /**
+     * 已知 pnpm 失败原因的补充说明（认不出返回空串）。
+     *
+     * <p>存在的理由：这个类里有好几处「跑 pnpm、失败就把 tail 甩给用户」的地方
+     * （子目录构建、clone 兜底、tarball 安装）。它们各自的失败文案都只讲自己那一步，
+     * 而真正的原因往往是全局性的（版本还在等待期、构建脚本没授权）。统一走
+     * {@link PnpmError} 补一句人话，比在每处各写一遍 if 强。
+     */
+    private static String explainKnownPnpmFailure(String out) {
+        String s = PnpmError.describe(out);
+        return s.isEmpty() ? "" : "\n\n" + s;
+    }
+
+    /**
+     * 单次插件安装执行（源码目录优先，无则全局 dsh）；pkg 已由入口校验，这里再兜一道。
+     *
+     * @param allowFreshRelease 只在用户在弹窗里明确点了「我信得过，现在就装」时为 true。
+     *                          pnpm 11 起 {@code minimumReleaseAge} 默认 1440 分钟（1 天），
+     *                          新发布的版本 24 小时内一律不解析 —— 那是防投毒的保护，
+     *                          不该由程序替用户悄悄关掉，所以它是个参数而不是常量。
+     *                          豁免只作用于**这一次调用**（环境变量，不落盘）。
+     */
+    private String runPluginInstall(String pkg, boolean allowFreshRelease) {
             try {
                 if (!isValidPluginSpec(pkg)) return "安装失败：非法插件名/来源：" + (pkg == null ? "null" : pkg);
                 String wd = host.detectWorkdir();
                 String arg = ShellQuote.arg(pkg);
+                // pnpm 11 起 .npmrc 只读 auth 与 registry，其它设置一概不认（详见 PnpmEnv
+                // 的类注释）。所以真正让 packageImportMethod=copy 生效的是这段 export，
+                // 而 .npmrc 只留 registry —— 那一行 pnpm 与容器里的 npm 都还要读。
+                String env = PnpmEnv.exportScript(allowFreshRelease);
+                String npmrc = PnpmEnv.writeNpmrcScript(null);
                 return proot.execAndRead(
+                        env +
                         "if [ -d /root/" + wd + " ]; then cd /root/" + wd + "; " + host.depsSelfHeal() +
-                        // 用 echo 而不是 printf：原来写的是 printf 'registry=…\\\\n'，
-                        // 经 Java 与 shell 两层转义后 printf 收到的是字面反斜杠，
-                        // 写进 .npmrc 的 registry 值末尾就带上了 \n（甚至 \\n）。
-                        // npm 规范化后变成 https://registry.npmmirror.com/n —— 于是每次
-                        // 真正要查 registry 的安装都是 404（报错里那个诡异的 /n/ 就是它）。
-                        // 之前没暴露，是因为包已在 pnpm store 里时 reused、不查 registry。
-                        "echo 'registry=https://registry.npmmirror.com' > /root/.npmrc; " +
+                        npmrc +
                         // 先判断源码仓库的 CLI 入口在不在。直接 node 一个不存在的文件会吐
                         // 一整段 MODULE_NOT_FOUND 堆栈（requireStack: []），它把 dsh 自己那句
                         // 关键警告从 tail 里挤了出去 —— 用户看到一屏 Node 堆栈，却看不到
@@ -3130,18 +3189,13 @@ class PluginController {
                         "( if [ -f apps/cli/lib/bin.js ]; then node apps/cli/lib/bin.js plugin --profile web add "
                                 + arg + " 2>&1; else dsh plugin --profile web add " + arg + " 2>&1; fi ); " +
                         "else echo '[DSHA] 无源码目录，回退全局 dsh'; " +
-                        // 用 echo 而不是 printf：原来写的是 printf 'registry=…\\\\n'，
-                        // 经 Java 与 shell 两层转义后 printf 收到的是字面反斜杠，
-                        // 写进 .npmrc 的 registry 值末尾就带上了 \n（甚至 \\n）。
-                        // npm 规范化后变成 https://registry.npmmirror.com/n —— 于是每次
-                        // 真正要查 registry 的安装都是 404（报错里那个诡异的 /n/ 就是它）。
-                        // 之前没暴露，是因为包已在 pnpm store 里时 reused、不查 registry。
-                        "echo 'registry=https://registry.npmmirror.com' > /root/.npmrc; " +
+                        npmrc +
                         "dsh plugin --profile web add " + arg + " 2>&1; fi | tail -40; echo INSTALL_EXIT=${PIPESTATUS[0]}");
             } catch (Exception e) {
                 return "安装失败: " + e.getMessage();
             }
         }
+
 
 
     private String copyToDownloads(java.io.File src, String name) {
