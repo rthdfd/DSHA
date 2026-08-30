@@ -28,8 +28,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JAVA_DIR="$REPO_ROOT/app/src/main/java/com/deepseekharness/app"
 SRCS=("$JAVA_DIR/LanAuth.java" "$JAVA_DIR/AssetPath.java" "$JAVA_DIR/BackupInspector.java" "$JAVA_DIR/PluginErrorHint.java" "$JAVA_DIR/RuntimeHealth.java" "$JAVA_DIR/OfflineVersion.java" "$JAVA_DIR/OverlayLines.java" "$JAVA_DIR/UserDataPolicy.java" "$JAVA_DIR/ShellQuote.java" "$JAVA_DIR/Query.java" "$JAVA_DIR/BackupScope.java" "$JAVA_DIR/PublicDirs.java" "$JAVA_DIR/ArchiveProbe.java" "$JAVA_DIR/GitHubRef.java" "$JAVA_DIR/PluginSpec.java" "$JAVA_DIR/PatchToggle.java" "$JAVA_DIR/MarketCol.java" "$JAVA_DIR/WebProcSel.java" "$JAVA_DIR/AssetBatch.java" "$JAVA_DIR/WatchdogScript.java" "$JAVA_DIR/PnpmEnv.java" "$JAVA_DIR/PnpmError.java")
 TEST="$REPO_ROOT/tools/pure-logic-test/PureLogicTest.java"
+# pnpm 那一块单独一个文件：它的判据全绑在一个外部工具的行为上（错误码措辞、配置读取
+# 位置），上游一变就要整段回看 —— 单独一个文件，回看范围就是这个文件。
+PNPM_TEST="$REPO_ROOT/tools/pure-logic-test/PnpmTest.java"
 
-for f in "${SRCS[@]}" "$TEST"; do
+for f in "${SRCS[@]}" "$TEST" "$PNPM_TEST"; do
   if [ ! -f "$f" ]; then
     echo "找不到 $f" >&2
     exit 1
@@ -44,5 +47,6 @@ fi
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-javac -encoding UTF-8 -nowarn -d "$OUT" "${SRCS[@]}" "$TEST"
+javac -encoding UTF-8 -nowarn -d "$OUT" "${SRCS[@]}" "$TEST" "$PNPM_TEST"
 java -cp "$OUT" com.deepseekharness.app.PureLogicTest
+java -cp "$OUT" com.deepseekharness.app.PnpmTest
