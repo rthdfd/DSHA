@@ -53,6 +53,12 @@ def sha256_of(path):
 def collect():
     items = []
     for root, dirs, files in os.walk(ASSETS):
+        # 排序是必需的，不是洁癖：os.walk 的目录顺序由文件系统给出，同一份内容在
+        # 不同机器（CI 的 ext4 / 手机上的 proot rootfs）上生成的清单条目顺序会不同。
+        # 于是「什么都没改」也能产出一份 diff 几十行的清单，而这个文件的脏正是
+        # 「有脚本改动、必须跟着 commit」的唯一信号（见 main() 里那段说明）。
+        # 顺序不稳 → 脏得频繁 → 脏不再是信号 → 漏提交。所以在源头钉住顺序。
+        dirs.sort()
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in sorted(files):
             if name in SKIP_NAMES or not name.endswith(EXTS):
@@ -67,6 +73,10 @@ def collect():
                 "sha256": sha256_of(full),
                 "urls": [t.format(path=rel) for t in URL_TEMPLATES],
             })
+    # 最后按 path 全局排序：dirs.sort() 只让**遍历**稳定，而 os.walk 是「先当前目录的
+    # 文件、再进子目录」，所以条目顺序仍取决于目录结构。全局排一次，清单顺序就只由
+    # 文件名决定 —— 任何机器、任何文件系统上生成的都是同一份。
+    items.sort(key=lambda i: i["path"])
     return items
 
 

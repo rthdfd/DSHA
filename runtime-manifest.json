@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated": "2026-08-29T05:07:22Z",
+  "generated": "2026-08-30T12:13:57Z",
   "note": "只含脚本层增量；rootfs 与 .so 随 APK 发布，不在此清单内",
   "files": [
     {
@@ -67,6 +67,28 @@
         "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/config-fix.js",
         "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/config-fix.js",
         "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/config-fix.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/device-shell-guide/lib/index.js",
+      "asset": "device-shell-guide/lib/index.js",
+      "size": 9154,
+      "sha256": "4e9ff0867b6479cfe3e230e70c65cece5d43cac96bc4735d5024d6b53cf7c7dc",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/lib/index.js",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/device-shell-guide/lib/index.js",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/lib/index.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/device-shell-guide/package.json",
+      "asset": "device-shell-guide/package.json",
+      "size": 539,
+      "sha256": "43b93a6b2755f512085e61d9385d5924a0f1b68a7abcf42edd77dcf4fccc33a9",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/package.json",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/device-shell-guide/package.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/package.json"
       ]
     },
     {
@@ -202,10 +224,43 @@
       ]
     },
     {
+      "path": "app/src/main/assets/mobile-nav/lib/client.js",
+      "asset": "mobile-nav/lib/client.js",
+      "size": 132303,
+      "sha256": "6c6ee969b3de2d7f04eafd4b70319c8f9c8891a72a21090fb5878636be6b2e04",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/client.js",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/lib/client.js",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/client.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/mobile-nav/lib/index.js",
+      "asset": "mobile-nav/lib/index.js",
+      "size": 317,
+      "sha256": "855d07192c12ac831830e87246216dbc74ad8c83a6d67ae00ee7e89a378591ef",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/index.js",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/lib/index.js",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/index.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/mobile-nav/package.json",
+      "asset": "mobile-nav/package.json",
+      "size": 2137,
+      "sha256": "b80273b3cb53a7c2aac643a6838c7d4d39f98374c22ee467692f977d41fc61ab",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/package.json",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/package.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/package.json"
+      ]
+    },
+    {
       "path": "app/src/main/assets/pnpm-env-fix.sh",
       "asset": "pnpm-env-fix.sh",
-      "size": 3126,
-      "sha256": "016e78543e61b73929f88dc448da75c646a96d8881514b165a02d334598ad2ff",
+      "size": 8190,
+      "sha256": "fd7d00ce1ae7499861721d5b4723549f1e403ebb21d0c5cc4aedeb950113dc73",
       "urls": [
         "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/pnpm-env-fix.sh",
         "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/pnpm-env-fix.sh",
@@ -243,6 +298,50 @@
         "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/selftest.py",
         "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/selftest.py",
         "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/selftest.py"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/status-overlay/lib/index.js",
+      "asset": "status-overlay/lib/index.js",
+      "size": 13892,
+      "sha256": "5a44140e9a447decd936f2ad5d5cebf10da41c00488d1d762f6afc7129a49b88",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/lib/index.js",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/status-overlay/lib/index.js",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/lib/index.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/status-overlay/package.json",
+      "asset": "status-overlay/package.json",
+      "size": 539,
+      "sha256": "c5ccc0a6959f3ce7eebcac0564cc58478d6df406af8352997a051272a47ba689",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/package.json",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/status-overlay/package.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/package.json"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/task-notifier/lib/index.js",
+      "asset": "task-notifier/lib/index.js",
+      "size": 2685,
+      "sha256": "b90f85cc72d20ba190b35733a1aec3fb8a1b9d73bfe0331b3217d82195d133de",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/lib/index.js",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/task-notifier/lib/index.js",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/lib/index.js"
+      ]
+    },
+    {
+      "path": "app/src/main/assets/task-notifier/package.json",
+      "asset": "task-notifier/package.json",
+      "size": 325,
+      "sha256": "bdc77d51c191c0e5bc64467c51f43af6b2668ad1d54cfe90aee9465354d412e4",
+      "urls": [
+        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/package.json",
+        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/task-notifier/package.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/package.json"
       ]
     },
     {
@@ -287,105 +386,6 @@
         "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/webui-polyfill.sh",
         "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/webui-polyfill.sh",
         "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/webui-polyfill.sh"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/status-overlay/package.json",
-      "asset": "status-overlay/package.json",
-      "size": 539,
-      "sha256": "c5ccc0a6959f3ce7eebcac0564cc58478d6df406af8352997a051272a47ba689",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/package.json",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/status-overlay/package.json",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/package.json"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/status-overlay/lib/index.js",
-      "asset": "status-overlay/lib/index.js",
-      "size": 13892,
-      "sha256": "5a44140e9a447decd936f2ad5d5cebf10da41c00488d1d762f6afc7129a49b88",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/lib/index.js",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/status-overlay/lib/index.js",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/status-overlay/lib/index.js"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/device-shell-guide/package.json",
-      "asset": "device-shell-guide/package.json",
-      "size": 539,
-      "sha256": "43b93a6b2755f512085e61d9385d5924a0f1b68a7abcf42edd77dcf4fccc33a9",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/package.json",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/device-shell-guide/package.json",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/package.json"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/device-shell-guide/lib/index.js",
-      "asset": "device-shell-guide/lib/index.js",
-      "size": 9154,
-      "sha256": "4e9ff0867b6479cfe3e230e70c65cece5d43cac96bc4735d5024d6b53cf7c7dc",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/lib/index.js",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/device-shell-guide/lib/index.js",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/device-shell-guide/lib/index.js"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/task-notifier/package.json",
-      "asset": "task-notifier/package.json",
-      "size": 325,
-      "sha256": "bdc77d51c191c0e5bc64467c51f43af6b2668ad1d54cfe90aee9465354d412e4",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/package.json",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/task-notifier/package.json",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/package.json"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/task-notifier/lib/index.js",
-      "asset": "task-notifier/lib/index.js",
-      "size": 2685,
-      "sha256": "b90f85cc72d20ba190b35733a1aec3fb8a1b9d73bfe0331b3217d82195d133de",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/lib/index.js",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/task-notifier/lib/index.js",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/task-notifier/lib/index.js"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/mobile-nav/package.json",
-      "asset": "mobile-nav/package.json",
-      "size": 2137,
-      "sha256": "b80273b3cb53a7c2aac643a6838c7d4d39f98374c22ee467692f977d41fc61ab",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/package.json",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/package.json",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/package.json"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/mobile-nav/lib/client.js",
-      "asset": "mobile-nav/lib/client.js",
-      "size": 132303,
-      "sha256": "6c6ee969b3de2d7f04eafd4b70319c8f9c8891a72a21090fb5878636be6b2e04",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/client.js",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/lib/client.js",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/client.js"
-      ]
-    },
-    {
-      "path": "app/src/main/assets/mobile-nav/lib/index.js",
-      "asset": "mobile-nav/lib/index.js",
-      "size": 317,
-      "sha256": "855d07192c12ac831830e87246216dbc74ad8c83a6d67ae00ee7e89a378591ef",
-      "urls": [
-        "https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/index.js",
-        "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/app/src/main/assets/mobile-nav/lib/index.js",
-        "https://ghproxy.net/https://raw.githubusercontent.com/qiannianhuanxiang/DSHA/main/app/src/main/assets/mobile-nav/lib/index.js"
       ]
     }
   ]
