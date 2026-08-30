@@ -2767,14 +2767,26 @@ public class HarnessController {
                 "tar -xzf headers.tar.gz --strip-components=1 && rm -f headers.tar.gz && touch .install-stamp; " +
                 "else echo 'Node headers 已缓存，跳过下载'; fi");
 
-        // 关键：pnpm 10/11 默认忽略依赖构建脚本（node-pty 的 node-gyp 编译会被跳过），
-        // 必须把 node-pty 加入 onlyBuiltDependencies 白名单才会执行
+        // 原生模块（node-pty）的编译授权。
+        //
+        // pnpm 11 起 onlyBuiltDependencies 等一系列老设置**已被移除**，替代品是
+        // allowBuilds（一张 包名 → 布尔 的表）。而这段代码原来是
+        //     grep -q 'onlyBuiltDependencies' || 追加
+        // —— 老装机上那一行早就写好了，于是条件永远为真、永远不会迁移到新格式，
+        // node-pty 的 node-gyp 编译授权就一直是失效的。实测 pnpm 11.7.0 下
+        // onlyBuiltDependencies 既不报错也不生效（ERR_PNPM_IGNORED_BUILDS 照旧），
+        // 属于最难发现的那类静默失效。
+        //
+        // 这里改成**按 allowBuilds 判断**并补写。两条设置可以共存（实测无冲突警告），
+        // 所以刻意不删旧的那几行 —— 用户可能自己往里加过东西，而且万一将来回退到
+        // pnpm 10，旧格式还是有效的。写入格式与 PatchToggle.withAllowBuild 保持一致。
         runStep("允许原生模块构建（node-pty）", 94,
                 "cd /root/" + wd + " && " +
-                "(grep -q 'onlyBuiltDependencies' pnpm-workspace.yaml 2>/dev/null || " +
-                "printf '\\nonlyBuiltDependencies:\\n  - node-pty\\n' >> pnpm-workspace.yaml) && " +
+                "(grep -q 'allowBuilds' pnpm-workspace.yaml 2>/dev/null || " +
+                "printf '\\nallowBuilds:\\n  node-pty: true\\n' >> pnpm-workspace.yaml) && " +
                 // Ubuntu 24.04 无 /usr/bin/python（只有 python3），部分构建工具死认 python 命令
                 "(command -v python >/dev/null 2>&1 || ln -sf /usr/bin/python3 /usr/bin/python || true)");
+
 
         // 先把 pnpm 的硬链接导入关掉：proot 下 link() 只是 symlink 模拟，
         // 留下的悬空链会让后续安装报各种莫名的 ENOENT
@@ -2785,19 +2797,21 @@ public class HarnessController {
             // 所以直接写 .npmrc 文件 + 环境变量（不经过 npm 配置校验）
             // pnpm 会持续打印进度，五分钟一声不吭基本就是网络挂了
             runStep("安装依赖 pnpm install", 95,
+                    // pnpm 11 起 .npmrc 只读 auth 与 registry，其它设置一概不认。
+                    // 以前这里 printf 三行进 .npmrc（registry + package-import-method +
+                    // side-effects-cache），后两行从 pnpm 11 起完全无效 —— 于是 pnpm 又回去
+                    // 用硬链接，proot 下就是 .l2s 悬空链那套老问题，而且没有任何报错指向它。
+                    // 现在设置统一从 PnpmEnv 出（环境变量，优先级最高），.npmrc 只留 registry。
+                    PnpmEnv.exportScript(false) +
+                    PnpmEnv.writeNpmrcScript(null) +
                     "cd /root/" + wd + " && " +
-                    // 三项一次写全。以前只写 registry 且用 > 覆盖，会把
-                    // pnpm-env-fix.sh 刚配好的 package-import-method 冲掉 ——
-                    // 于是 pnpm 又回去用硬链接，proot 下就是 .l2s 悬空链那套老问题
-                    "printf 'registry=https://registry.npmmirror.com\\n"
-                    + "package-import-method=copy\\nside-effects-cache=false\\n'"
-                    + " > /root/.npmrc && " +
                     lowResourceEnv() +
                     // 受限容器里 fork 受限，--child-concurrency=1 让 pnpm 串行跑
                     // 依赖脚本；非 anco 环境 lowResourceEnv() 为空，参数也不加
                     (isAncoContainer() ? "pnpm install --child-concurrency=1" : "pnpm install"),
                     // pnpm 会持续打印包名，五分钟一声不吭基本就是网络挂了
                     300_000L);
+
         } catch (Exception e) {
             throw new Exception(e.getMessage() + "\n\n[原生模块编译失败提示]\n"
                     + "1. Node headers 已预下载到 node-gyp 缓存（npmmirror 源），不依赖 nodejs.org\n"
@@ -3280,10 +3294,17 @@ public class HarnessController {
         String wd = getWorkdir();
         // 关键 workspace 包清单：任一 require.resolve 失败即视为依赖缺失，自动 pnpm install
         // 保底超时：offline 90s / 联网 180s，避免长卡拖崩启动
-        return "node -e \"['@deepseek-ai/dsh-app-boot','@deepseek-ai/dsh-workspace','@deepseek-ai/dsh-session','@deepseek-ai/dsh-base'].forEach(function(m){try{require.resolve(m)}catch(e){process.exit(1)}})\" 2>/dev/null || "
+        //
+        // pnpm 的设置从 PnpmEnv 统一注入：自愈这条路也会真的跑 pnpm install，
+        // 缺了 packageImportMethod=copy 就会在 proot 下留下 .l2s 悬空链，
+        // 而它发生在**启动过程中**，症状会表现成「启动失败」而不是「装依赖失败」，
+        // 更难定位。
+        return PnpmEnv.exportScript(false)
+                + "node -e \"['@deepseek-ai/dsh-app-boot','@deepseek-ai/dsh-workspace','@deepseek-ai/dsh-session','@deepseek-ai/dsh-base'].forEach(function(m){try{require.resolve(m)}catch(e){process.exit(1)}})\" 2>/dev/null || "
                 + "{ echo '[DSHA] 检测到 harness 依赖缺失，正在自动修复…'; "
                 + "(timeout 90 pnpm install --offline 2>/dev/null || timeout 180 pnpm install) >> /root/deps-selfheal.log 2>&1; }; ";
     }
+
 
     /** WebUI 实际启动命令核心（看门狗重启与正常启动共用）。
      *  自动判断：源码目录存在 → cd + 依赖自愈 + node apps/cli/lib/bin.js web；
@@ -6672,6 +6693,10 @@ public class HarnessController {
     public String removePlugin(String pkg) { return plugins.removePlugin(pkg); }
     public String installPlugin(String pkg) { return plugins.installPlugin(pkg); }
     public String installPlugin(String pkg, String fallbackSpec) { return plugins.installPlugin(pkg, fallbackSpec); }
+    /** 带「允许刚发布的版本」开关的安装 —— 只有用户在弹窗里明确同意后才传 true。 */
+    public String installPlugin(String pkg, String fallbackSpec, boolean allowFreshRelease) {
+        return plugins.installPlugin(pkg, fallbackSpec, allowFreshRelease);
+    }
     public String[] precheckForMarket(String spec, String npmNameHint) { return plugins.precheckForMarket(spec, npmNameHint); }
     public String[] parseGithubUrl(String url) { return plugins.parseGithubUrl(url); }
     public String installFromGithubUrl(String url) { return plugins.installFromGithubUrl(url); }
