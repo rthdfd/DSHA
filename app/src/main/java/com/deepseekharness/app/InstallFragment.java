@@ -62,7 +62,23 @@ public class InstallFragment extends Fragment {
 
         installBtn.setOnClickListener(v -> {
             if (c.getApiKey().isEmpty()) {
-                Toast.makeText(requireContext(), "请先在「配置」模块填入 API key", Toast.LENGTH_LONG).show();
+                // 允许跳过：dsh 的 WebUI 自己就能配服务商（官方或第三方 base_url），
+                // 在这里硬拦着反而让「只想先装环境」的用户走不下去
+                new AlertDialog.Builder(requireContext())
+                        .setTitle("还没填 API key")
+                        .setMessage("可以直接跳过。\n\n"
+                                + "装好之后打开 DeepSeek Harness 的 WebUI，"
+                                + "在里面的设置里可以自行配置官方或第三方 API"
+                                + "（自定义接口地址、模型名、密钥都行）。\n\n"
+                                + "跳过时 .env 不会写入 key，一切交给 WebUI 里的设置。")
+                        .setPositiveButton("跳过，直接安装", (d, w) -> c.install())
+                        .setNeutralButton("去填 key", (d, w) ->
+                                requireActivity().getSupportFragmentManager().beginTransaction()
+                                        .replace(R.id.fragment_container, new ConfigFragment())
+                                        .addToBackStack("config")
+                                        .commit())
+                        .setNegativeButton("取消", null)
+                        .show();
                 return;
             }
             c.install();
@@ -82,10 +98,18 @@ public class InstallFragment extends Fragment {
             statusText.setText("正在清除环境…");
             new Thread(() -> {
                 c.getProot().uninstall();
-                requireActivity().runOnUiThread(() -> {
+                // 环境已删：步骤缓存强制失效（否则 5s 内 UI 仍显示"已安装"）
+                c.invalidateSteps();
+                // 清除环境要删掉整个 rootfs（几 GB、几十秒），这期间用户很可能已经切走页面。
+                // 那时 requireActivity()/requireContext() 会抛 IllegalStateException，
+                // 碰 view 会 NPE —— 表现为「清完环境 App 闪退」。
+                final android.app.Activity act = getActivity();
+                if (act == null || !isAdded()) return;
+                act.runOnUiThread(() -> {
+                    if (!isAdded()) return;
                     installBtn.setEnabled(true);
                     uninstallBtn.setEnabled(true);
-                    Toast.makeText(requireContext(), "已清除环境", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(act, "已清除环境", Toast.LENGTH_SHORT).show();
                     refreshFromState();
                 });
             }).start();
@@ -168,7 +192,7 @@ public class InstallFragment extends Fragment {
     }
 
     private void refreshFromState() {
-    if (!isAdded()) return;
+        if (!isAdded()) return;
         // 先快速刷新不依赖步骤状态的部分（err 展示 / 进度显示 / 按钮可用性）
         String err = c.getError();
         if (err != null && !err.isEmpty()) {
@@ -210,7 +234,8 @@ public class InstallFragment extends Fragment {
         uninstallBtn.setEnabled(!running);
         // 步骤状态：主线程先用缓存立即画（零耗时不卡），后台线程补算最新值再刷
         boolean[] cached = c.peekStepCache();
-        refreshSteps(cached);
+        boolean[] cachedUp = c.peekUpdatableCache();
+        refreshSteps(cached, cachedUp);
         refreshStatus(cached);
         if (stepCheckRunning.getAndSet(true)) return;
         new Thread(() -> {
@@ -219,10 +244,15 @@ public class InstallFragment extends Fragment {
                 stepCheckRunning.set(false);
                 return;
             }
-            getActivity().runOnUiThread(() -> {
+            final android.app.Activity act = getActivity();
+            if (act == null) { // 极端情况：isAdded 与 getActivity 间 Activity 被回收
+                stepCheckRunning.set(false);
+                return;
+            }
+            act.runOnUiThread(() -> {
                 stepCheckRunning.set(false);
                 if (!isAdded()) return;
-                refreshSteps(done);
+                refreshSteps(done, c.peekUpdatableCache());
                 refreshStatus(done);
             });
         }).start();
@@ -255,32 +285,37 @@ public class InstallFragment extends Fragment {
     }
 
     /** 更新 4 个步骤的状态显示（复用批量查询结果，不再逐一查询） */
-    private void refreshSteps(boolean[] done) {
-        step1Btn.setText(stepLabel(done, HarnessController.STEP_ROOTFS));
-        step2Btn.setText(stepLabel(done, HarnessController.STEP_TOOLS));
-        step3Btn.setText(stepLabel(done, HarnessController.STEP_NODE));
+    private void refreshSteps(boolean[] done, boolean[] upd) {
+        step1Btn.setText(stepLabel(done, upd, HarnessController.STEP_ROOTFS));
+        step2Btn.setText(stepLabel(done, upd, HarnessController.STEP_TOOLS));
+        step3Btn.setText(stepLabel(done, upd, HarnessController.STEP_NODE));
         // 修正 123546 bug（对齐 fixed45）：按钮4=④ pnpm，按钮5=⑤ harness
-        step4Btn.setText(stepLabel(done, HarnessController.STEP_PNPM));
-        step5Btn.setText(stepLabel(done, HarnessController.STEP_HARNESS));
-        step6Btn.setText(stepLabel(done, HarnessController.STEP_GUARD));
+        step4Btn.setText(stepLabel(done, upd, HarnessController.STEP_PNPM));
+        step5Btn.setText(stepLabel(done, upd, HarnessController.STEP_HARNESS));
+        step6Btn.setText(stepLabel(done, upd, HarnessController.STEP_GUARD));
         // 修正 123546 bug（对齐 fixed45）：按钮4=④ pnpm，按钮5=⑤ harness，按钮6=⑥ 安全与补丁
         stepStatusText.setText(
-                "① Linux 环境（rootfs）   " + mark(done, HarnessController.STEP_ROOTFS) + "\n" +
-                "② 基础工具（apt）       " + mark(done, HarnessController.STEP_TOOLS) + "\n" +
-                "③ Node.js               " + mark(done, HarnessController.STEP_NODE) + "\n" +
-                "④ Node 附加(pnpm/node-gyp) " + mark(done, HarnessController.STEP_PNPM) + "\n" +
-                "⑤ deepseek-harness      " + mark(done, HarnessController.STEP_HARNESS) + "\n" +
-                "⑥ 安全与补丁            " + mark(done, HarnessController.STEP_GUARD));
+                "① Linux 环境（rootfs）   " + mark(done, upd, HarnessController.STEP_ROOTFS) + "\n" +
+                "② 基础工具（apt）       " + mark(done, upd, HarnessController.STEP_TOOLS) + "\n" +
+                "③ Node.js               " + mark(done, upd, HarnessController.STEP_NODE) + "\n" +
+                "④ Node 附加(pnpm/node-gyp) " + mark(done, upd, HarnessController.STEP_PNPM) + "\n" +
+                "⑤ deepseek-harness      " + mark(done, upd, HarnessController.STEP_HARNESS) + "\n" +
+                "⑥ 安全与补丁            " + mark(done, upd, HarnessController.STEP_GUARD));
     }
 
-    private String mark(boolean[] done, int step) {
+    private String mark(boolean[] done, boolean[] upd, int step) {
         if (c.isBusy() && c.getCurrentStep() == step) return "⏳ 进行中";
-        return step >= 1 && step < done.length && done[step] ? "✅ 已就绪" : "⬜ 未安装";
+        if (step >= 1 && step < done.length && done[step]) return "✅ 已就绪";
+        // 装了旧版但未达标（如 dsh rc.6 < rc.8）→ 提示可更新而非"未安装"
+        if (step >= 1 && step < upd.length && upd[step]) return "⭐ 可更新";
+        return "⬜ 未安装";
     }
 
-    private String stepLabel(boolean[] done, int step) {
+    private String stepLabel(boolean[] done, boolean[] upd, int step) {
         String name = HarnessController.stepName(step);
-        return step >= 1 && step < done.length && done[step] ? "重装 " + name : "安装 " + name;
+        if (step >= 1 && step < done.length && done[step]) return "重装 " + name;
+        if (step >= 1 && step < upd.length && upd[step]) return "⭐ 更新 " + name;
+        return "安装 " + name;
     }
 
     /** 进度文案：stage 已含 %（下载那种）则不重复拼接百分比 */
@@ -294,6 +329,15 @@ public class InstallFragment extends Fragment {
         int cnt = 0;
         for (int s = HarnessController.STEP_ROOTFS; s <= HarnessController.STEP_GUARD; s++) {
             if (s < done.length && done[s]) cnt++;
+        }
+        // 正在跑安装/自动重跑⑥时，别报"全部安装完成"——步骤标记是上一轮留下的，
+        // 后台其实还在更新守卫和内置插件，此时说完成会让人以为可以直接开 WebUI。
+        if (c != null && c.isBusy()) {
+            String stage = c.getStage() == null ? "" : c.getStage();
+            statusText.setText("🔄 正在安装/更新" + (stage.isEmpty() ? "" : "：" + stage)
+                    + "\n\n完成前请勿启动 Web UI。");
+            installBtn.setText("安装中…");
+            return;
         }
         if (cnt == 6) {
             statusText.setText("✅ 全部安装完成\n\n可到「启动」页启动 Web UI。");

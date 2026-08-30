@@ -16,6 +16,7 @@ import android.view.View;
 import android.widget.CheckBox;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.fragment.app.Fragment;
@@ -27,29 +28,39 @@ public class MainActivity extends AppCompatActivity {
     /** 当前前台 Activity（HttpShellService 用它弹确认框）；null = 不在前台 */
     public static volatile MainActivity current = null;
 
+    /** 自动恢复弹窗的「手动选择」出口。分区存储下 SAF 是读取「别的安装写进
+     *  Download/DSHA 的备份」唯一不需要权限、也一定能成的办法（issue #22）。
+     *  注册必须发生在 Activity 进入 STARTED 之前，所以放在字段初始化里。 */
+    private final androidx.activity.result.ActivityResultLauncher<String[]> backupPicker =
+            registerForActivityResult(
+                    new androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+                    uri -> {
+                        if (uri != null) {
+                            HarnessController.get(this).restorePickedUri(this, uri);
+                        }
+                    });
+
+    /** 供 HarnessController 的恢复弹窗调用：打开系统文件选择器挑备份包。 */
+    public void pickBackupForRestore() {
+        try {
+            // MediaStore 给 tar.gz 记的 MIME 各家 ROM 不一，多给几个并兜 */*，
+            // 否则用户会看到「没有可选文件」。
+            backupPicker.launch(new String[]{"application/gzip", "application/x-gzip",
+                    "application/x-tar", "application/octet-stream", "*/*"});
+        } catch (Throwable e) {
+            Toast.makeText(this, "无法打开文件选择器：" + e, Toast.LENGTH_LONG).show();
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 崩溃捕获：写日志到 files/crash.log，并继续交给系统默认 handler（保留 DropBox 崩溃报告）
-        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((thread, t) -> {
-            try {
-                java.io.File f = new java.io.File(getFilesDir(), "crash.log");
-                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, true)) {
-                    fos.write(("\n===== " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(new java.util.Date()) + " =====\n"
-                            + android.util.Log.getStackTraceString(t) + "\n").getBytes());
-                }
-            } catch (Exception ignored) {
-            }
-            // 转交系统默认 handler（否则系统 CrashReport/DropBox 收不到，只剩我们自己写的日志）
-            if (prev != null) {
-                prev.uncaughtException(thread, t);
-            } else {
-                android.os.Process.killProcess(android.os.Process.myPid());
-            }
-        });
+        // 崩溃捕获已统一在 DshaApp 安装一次（防止 Activity 重建导致重复/覆盖 handler）
 
         // 首次启动进入引导页
+        // 静态标志跨 Activity 存活：若上个 Activity 在恢复弹窗显示期间被销毁，
+        // dismiss 回调不会触发，标志会永久卡在 true，权限弹窗从此再也不弹。
+        HarnessController.restoreFlowActive = false;
         SharedPreferences prefs = getSharedPreferences("deepseekharness", MODE_PRIVATE);
         if (!prefs.getBoolean("welcomed", false)) {
             startActivity(new Intent(this, WelcomeActivity.class));
@@ -68,20 +79,46 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_main);
 
-        // 升级/首次启动自愈：自动备份旧环境；全新环境且 Download/DSHA 有旧备份时提示恢复
-        if (HarnessController.get(this).upgradeGuard()) {
-            // 仅解压完成进入主界面（skip_extract=true）才检测"全新环境可恢复"，
-            // 避免首启解压前 rootfs 未就绪误弹恢复框（恢复内容会被解压流程覆盖）
-            if (getIntent().getBooleanExtra("skip_extract", false)) {
-                HarnessController.get(this).maybePromptRestore(this);
-            }
-        }
+        // 升级自动备份（幂等；rootfs 未就绪时内部自动跳过）
+        HarnessController.get(this).upgradeGuard();
+        // 每启动 5 次自动备份一次（固定名覆盖；与手动备份独立）
+        HarnessController.get(this).maybeAutoBackupOnLaunch();
+        // 检测 dsh 新版本 → 自动重跑⑥（安全守卫/补丁/内置插件适配新版本）
+        HarnessController.get(this).maybeAutoReinstallGuardOnDshUpdate();
+        // ADB 链路自动体检+自愈（打开即用：脚本/依赖/包装命令/连接，缺啥修啥）
+        HarnessController.get(this).maybeAdbSelfHeal();
+        // dsh 子包依赖完整性自愈（npmmirror 镜像元数据不一致导致 Cannot find module）
+        HarnessController.get(this).maybeHealDshDeps();
+        // write 工具悬空链接自愈（proot l2s 与 dsh 的 link 发布冲突；幂等秒回）
+        HarnessController.get(this).maybeFixFsWrite();
+        // 空 pets 目录清理（deepseek-pet 插件空目录会崩插件树）
+        HarnessController.get(this).maybeCleanEmptyPets();
+        // 会话损坏自愈（中途强杀导致 SQLite 写一半 → 历史加载失败）
+        HarnessController.get(this).maybeHealSessionCorruption();
+        // 步骤⑥版本对比：内置插件/补丁有更新时自动重跑（无需手动重装⑥）
+        HarnessController.get(this).maybeRefreshStep6();
+        // 内置插件注册自愈：⑥ 可能跑在 profile 生成之前（那时注册会被静默跳过），
+        // 所以每次开 App 都校验一遍「设备引导插件是否真的注册进 bundles」
+        HarnessController.get(this).ensureBuiltinPluginsReady();
+        // 崩溃自愈提示：上次异常退出时读 crash.log 告知原因（不阻塞使用）
+        showCrashRecoveryNotice();
+        // 全新环境可恢复检测。走到这里 rootfs 一定已解压（skip_extract=true 来自
+        // ExtractActivity，否则上面 isOfflineExtracted() 不通过就已跳走），所以不再限定
+        // skip_extract —— 首启那次弹窗被用户划掉/进程被杀后，下次开 App 还有机会补上
+        // （issue #22）。方法内部只在 .dsh 尚无用户数据时才弹，不会覆盖已有数据。
+        HarnessController.get(this).maybePromptRestore(this);
+        // 上次重解压没走完 → 数据保护目录还在，问用户要不要把数据恢复回来。
+        // **必须排在升级提示之前**：数据没归位就再提示重解压，只会把同一个失败重复一遍。
+        HarnessController.get(this).maybeOfferPreservedDataRecovery(this);
+        // 离线包升级感知：APK 内置新离线包 → 提示重解压（数据自动保留）。
+        // 放外面：正常启动（rootfs 已解压）也要检测，方法内部自带
+        // isOfflineExtracted() 保护（首启未解压时静默）。
+        HarnessController.get(this).maybeOfferOfflineUpgrade(this);
 
         requestPermissions();
         requestBatteryOptimization();
         maybeShowBackupReminder();
         maybeCheckUpdate();
-        maybeRunUpgradeMigration();
         // ADB 默认关。只有用户在配置里勾选后才会拉设备桥。
         DeviceBridgeService.apply(this);
 
@@ -93,6 +130,16 @@ public class MainActivity extends AppCompatActivity {
 
         nav.setOnItemSelectedListener(item -> {
             int id = item.getItemId();
+            // GitHub 链接输入框只在插件页有意义：切走就藏起来并清空，
+            // 否则它会顶着别的页面的标题栏，还留着上次的内容。
+            android.widget.EditText ghIn = findViewById(R.id.appbar_github_input);
+            View spacer = findViewById(R.id.appbar_spacer);
+            if (ghIn != null) {
+                boolean onPlugins = id == R.id.nav_plugins;
+                ghIn.setVisibility(onPlugins ? View.VISIBLE : View.GONE);
+                if (spacer != null) spacer.setVisibility(onPlugins ? View.GONE : View.VISIBLE);
+                if (!onPlugins) ghIn.setText("");
+            }
             getSupportFragmentManager().popBackStack(null,
                     androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE);
             Fragment f;
@@ -100,7 +147,11 @@ public class MainActivity extends AppCompatActivity {
                 f = new LaunchFragment();
                 setAppTitle("启动");
             } else if (id == R.id.nav_terminal) {
-                f = new TerminalFragment();
+                // 两套终端并存：默认 PTY 那套（跑得了 vim / htop / tmux），页内点「简易」
+                // 可以退回旧的 TextView 版本 —— 新终端万一在某些机型上出问题，
+                // 用户不至于连命令行都没了。选择记在 PtyTerminalFragment.KEY_PTY。
+                f = PtyTerminalFragment.preferred(this)
+                        ? new PtyTerminalFragment() : new TerminalFragment();
                 setAppTitle("终端");
             } else if (id == R.id.nav_plugins) {
                 f = new PluginFragment();
@@ -136,6 +187,58 @@ public class MainActivity extends AppCompatActivity {
         if (t != null) t.setText(title);
     }
 
+    /** 崩溃自愈提示：上次有未处理崩溃时，读 crash.log 首条摘要告知用户（不阻塞，仅提示） */
+    private void showCrashRecoveryNotice() {
+        try {
+            // 同一份 crash.log 只提醒一次（24h 去重，不删除日志本体，保留取证）
+            SharedPreferences prefs = getSharedPreferences("deepseekharness", MODE_PRIVATE);
+            final java.io.File f = new java.io.File(getFilesDir(), "crash.log");
+            if (!f.isFile() || f.length() == 0) return;
+            if (System.currentTimeMillis() - prefs.getLong("crash_notice_shown", 0) < 24L * 3600 * 1000) {
+                return;
+            }
+            prefs.edit().putLong("crash_notice_shown", System.currentTimeMillis()).apply();
+            String all = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (all.trim().isEmpty()) return;
+            // 只取最后一条崩溃的异常类型/消息（首个堆栈帧）
+            String[] blocks = all.split("===== ");
+            String last = blocks[blocks.length - 1];
+            String summary = "";
+            for (String line : last.split("\n")) {
+                String t = line.trim();
+                if (t.startsWith("java.") || t.startsWith("android.") || t.startsWith("kotlin.")) {
+                    summary = t.length() > 180 ? t.substring(0, 180) : t;
+                    break;
+                }
+            }
+            final String info = summary.isEmpty() ? "发生异常" : summary;
+            // 不影响提示：已读内容归档到 crash.log.prev（本轮 crash.log 保留供反复查看）
+            try {
+                java.io.File prev = new java.io.File(getFilesDir(), "crash.log.prev");
+                //noinspection ResultOfMethodCallIgnored
+                prev.delete();
+                //noinspection ResultOfMethodCallIgnored
+                f.renameTo(prev);
+            } catch (Throwable ignored) {
+            }
+            // 延迟 1.2 秒再弹：等主界面画完，不然对话框会和启动动画抢焦点。
+            // 但延迟期间 Activity 可能已经被退掉（崩溃恢复场景下用户往往会立刻再退一次），
+            // 那时 new AlertDialog.Builder(this).show() 会抛 BadTokenException，
+            // 用户看到的是「刚从崩溃恢复又崩一次」。
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                new AlertDialog.Builder(this)
+                    .setTitle("上次异常退出")
+                    .setMessage("DSHA 上次运行发生了未处理异常，已自动恢复。\n\n" + info
+                            + "\n\n如果问题反复出现，请把内置终端里 `cat /data/data/com.dsh.client/files/crash.log.prev`（或 crash.log）的内容发给开发者。")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            }, 1200);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 自动申请所需权限：通知（前台服务需要）+ 电池优化白名单（保活） */
     private void requestPermissions() {
         if (Build.VERSION.SDK_INT >= 33
@@ -146,10 +249,112 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 100 && grantResults.length > 0
+                && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            // 用户拒绝通知权限：ADB 配对卡/任务完成提醒无法显示，给一次引导提示
+            android.widget.Toast.makeText(this,
+                    "未授予通知权限：ADB 配对卡片与任务完成提醒将不可用。\n可到系统设置 → 应用 → DSHA → 通知 开启。",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        // 用户回到 App 时催一次 ADB 探测：这一刻往往正要用它（内部有防抖与单飞）
+        try {
+            if (DeviceBridgeService.isAdbEnabled(this)) {
+                DeviceBridgeService.kickNow(this, "回到 App");
+            }
+        } catch (Throwable ignored) {
+        }
         current = this;
         TaskNotifier.appInForeground = true;
+        // 从「所有文件访问」设置页返回时能立刻发现已授予 → 补跑一次数据迁移
+        maybeRequestAllFilesAccess();
+    }
+
+    /** 申请「所有文件访问」（All Files Access）。
+     *
+     *  为什么需要：会话/设置/附件要迁到 /sdcard/Documents/dshdata 才能做到
+     *  **卸载重装不丢**。而 Android 11+ 下没有这个权限就写不进公开目录，
+     *  迁移脚本只会静默跳过 —— 用户以为数据安全了，其实还在私有目录里，
+     *  一卸载全没。
+     *
+     *  这是特殊权限，不能用运行时弹窗授予，必须跳系统设置页由用户手动开。
+     *  所以：说清理由 → 跳设置页 → 回来后自动补跑迁移。
+     *  用户拒绝也不纠缠（只问一次），但自检里会持续提示风险。 */
+    /** 供恢复流程结束后调用：那时才轮到我们问权限。 */
+    void recheckAllFilesAccess() {
+        maybeRequestAllFilesAccess();
+    }
+
+    private void maybeRequestAllFilesAccess() {
+        try {
+            if (Build.VERSION.SDK_INT < 30) return;      // 老系统本来就能直写公共目录
+            // 恢复弹窗优先：它和我们要的是同一个权限，用户刚重装时恢复数据更紧急。
+            // 直接 return 而不标记 asked_all_files —— 否则「只问一次」的额度
+            // 会被这次让路白白用掉，等恢复流程结束就再也不问了。
+            if (HarnessController.restoreFlowActive) return;
+            SharedPreferences prefs = getSharedPreferences("deepseekharness", MODE_PRIVATE);
+            if (android.os.Environment.isExternalStorageManager()) {
+                // 已授予：如果之前因为没权限跳过过迁移，这里补跑一次（幂等、失败无感）
+                if (!prefs.getBoolean("public_data_migrated", false)) {
+                    prefs.edit().putBoolean("public_data_migrated", true).apply();
+                    final HarnessController hc = HarnessController.get(this);
+                    new Thread(() -> {
+                        try {
+                            hc.migratePublicDataNow();
+                        } catch (Throwable ignored) {
+                        }
+                    }, "dsha-migrate-after-grant").start();
+                    // 授权后备份就能被枚举到了（#32 实测：授权前 0 个、授权后 14 个全可读）。
+                    // 之前因为看不见而给出的「手动选择」提示，现在可以换成真正的恢复建议。
+                    try {
+                        prefs.edit().remove("restore_prompt_declined").apply();
+                        hc.maybePromptRestore(this);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                return;
+            }
+            // 未授予且已经问过 → 不再打扰（自检里仍会报「卸载会丢数据」）
+            if (prefs.getBoolean("asked_all_files", false)) return;
+            // 正在结束的 Activity 上 show() 会抛 BadTokenException（本项目踩过一次）
+            if (isFinishing() || isDestroyed()) return;
+            prefs.edit().putBoolean("asked_all_files", true).apply();
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("让对话数据卸载重装不丢")
+                    .setMessage("需要「所有文件访问」权限，把会话、设置、附件存到\n"
+                            + "内部存储/Documents/dshdata\n\n"
+                            + "· 卸载 App 或换机重装后数据仍在\n"
+                            + "· 文件管理器里可以直接看到和备份\n"
+                            + "· API Key 不会存进去（仍留在 App 私有区并加密）\n\n"
+                            + "不开也能正常使用，但数据只存在 App 私有目录里，卸载即丢失。")
+                    .setPositiveButton("去开启", (d, w) -> {
+                        try {
+                            Intent i = new Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                            i.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(i);
+                        } catch (Throwable e) {
+                            // 个别 ROM 没有这个页面：退到应用详情页，用户仍能找到开关
+                            try {
+                                Intent i2 = new Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                                i2.setData(Uri.parse("package:" + getPackageName()));
+                                startActivity(i2);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    })
+                    .setNegativeButton("以后再说", null)
+                    .show();
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -157,6 +362,17 @@ public class MainActivity extends AppCompatActivity {
         super.onPause();
         current = null;
         TaskNotifier.appInForeground = false;
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // 只在「真正退出」（finishing）时关闭终端持久 shell（防进程泄漏）；
+        // 旋转屏幕/配置变化触发 onDestroy 时 isFinishing()=false，保留会话（否则转屏即丢终端）
+        if (isFinishing()) {
+            TerminalFragment.shutdownShell();
+            PtyTerminalFragment.shutdown();
+        }
     }
 
     private void requestBatteryOptimization() {
@@ -188,8 +404,18 @@ public class MainActivity extends AppCompatActivity {
         }
         new Thread(() -> {
             String tag = UpdateChecker.checkLatestVersion();
-            if (tag == null || tag.equals(ignored)) return;
-            if (!UpdateChecker.isNewer(tag, current)) return;
+            boolean apkNewer = tag != null && !tag.equals(ignored)
+                    && UpdateChecker.isNewer(tag, current);
+            if (!apkNewer) {
+                // 应用本体已是最新 → 顺带看脚本层有没有小更新。
+                // 只拉几 KB 的清单做比对，**不下载**任何脚本：更新动作留给用户手动确认，
+                // 因为清单目前还没有签名，静默更新一条远程代码通道不合适。
+                maybeHintRuntimeUpdate();
+                return;
+            }
+            // 更新前自动存档：检测到新版先静默备份一次（同一版本只备份一次），
+            // 防覆盖安装/下载期间出意外丢数据
+            HarnessController.get(this).backupBeforeUpdate(tag);
             runOnUiThread(() -> new AlertDialog.Builder(this)
                     .setTitle("发现新版本 " + tag)
                     .setMessage("当前版本 v" + current + "\n是否前往下载？")
@@ -201,117 +427,41 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    // ================= 升级迁移：检测 → 自动备份 → 恢复 =================
-    // 覆盖安装（prefs/rootfs 保留）时：版本一变就自动备份，防止后续误操作丢数据；
-    // 卸载重装 / 数据被清（prefs 没了、rootfs 全新、.dsh 为空）时：只要外部还有历史备份就提示恢复。
-    private String currentVersionName() {
+    /** 脚本层有更新时温和提示一次，引导用户自己去配置页更新（不自动下载）。
+     *
+     *  纯手动的问题是用户根本想不起来去点；自动下载的问题是清单还没签名。
+     *  折中就是这里：自动**检查**（几 KB），提示一次，动作仍由用户发起。
+     *  同一批更新只提示一次 —— 用待更新文件名的指纹记住，别每次启动都烦人。 */
+    private void maybeHintRuntimeUpdate() {
         try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private void maybeRunUpgradeMigration() {
-        final SharedPreferences prefs = getSharedPreferences("deepseekharness", MODE_PRIVATE);
-        final String current = currentVersionName();
-        if (current == null) return;
-        final String last = prefs.getString("last_version", "");
-        if (current.equals(last)) {
-            // 版本没变：仍可能是重装后 prefs 恰好同版本，交给恢复检查兜底
-            maybeOfferRestore(prefs);
-            return;
-        }
-        if (last.isEmpty()) {
-            // 首次运行（或卸载重装后被清空）：建立基线
-            prefs.edit().putString("last_version", current).apply();
-            HarnessController c = HarnessController.get(this);
-            boolean hasData = c.getProot().isInstalled()
-                    && new java.io.File(c.getProot().getRootfsDir(), "root/.dsh").isDirectory();
-            if (hasData && !prefs.getBoolean("migration_seeded", false)) {
-                // 老用户在旧版本上没有 last_version，但已有 .dsh 数据：升级到本版时补一次初始备份
-                final String seed = current;
-                new Thread(() -> {
-                    try {
-                        String path = BackupManager.autoBackupForUpgrade(
-                                MainActivity.this, HarnessController.get(MainActivity.this), "old", seed);
-                        if (path != null) {
-                            getSharedPreferences("deepseekharness", MODE_PRIVATE)
-                                    .edit().putBoolean("migration_seeded", true).apply();
-                            runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                                    "检测到升级到 v" + seed + "，已自动备份数据", Toast.LENGTH_SHORT).show());
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }).start();
-                return;
+            RuntimeUpdater.Result probe = RuntimeUpdater.checkAndApply(
+                    getApplicationContext(), HarnessController.get(this), true);
+            if (probe.updated <= 0) return;
+            StringBuilder key = new StringBuilder();
+            for (String f : probe.changed) {
+                key.append(f).append('|');
             }
-            maybeOfferRestore(prefs);
-            return;
-        }
-        // 检测到升级：先记版本，再后台自动备份当前数据
-        prefs.edit().putString("last_version", current).apply();
-        final String from = last;
-        new Thread(() -> {
-            try {
-                HarnessController c = HarnessController.get(MainActivity.this);
-                if (!c.getProot().isInstalled()) return;
-                if (!new java.io.File(c.getProot().getRootfsDir(), "root/.dsh").isDirectory()) return;
-                String path = BackupManager.autoBackupForUpgrade(MainActivity.this, c, from, current);
-                if (path != null) {
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                            "检测到升级 v" + from + " → v" + current + "，已自动备份数据", Toast.LENGTH_SHORT).show());
-                }
-            } catch (Exception ignored) {
-            }
-        }).start();
-    }
-
-    /** rootfs 内没有 .dsh（全新/数据丢失）且外部存在历史备份时，提示恢复 */
-    private void maybeOfferRestore(SharedPreferences prefs) {
-        final String current = currentVersionName();
-        if (current == null || prefs.getBoolean("restore_ignored_" + current, false)) return;
-        HarnessController c = HarnessController.get(this);
-        try {
-            if (c.getProot().isInstalled()
-                    && new java.io.File(c.getProot().getRootfsDir(), "root/.dsh").isDirectory()) {
-                return; // 已有数据，不需要也不应覆盖
-            }
-        } catch (Exception e) {
-            return;
-        }
-        final String ref = BackupManager.findLatestSnapshot(this);
-        if (ref == null) return;
-        new AlertDialog.Builder(this)
-                .setTitle("发现历史数据备份")
-                .setMessage("检测到 Download/DSHA 中存在历史备份。\n"
-                        + "是否在首次使用前恢复配置与对话记录？")
-                .setPositiveButton("恢复", (d, w) -> doRestore(ref))
-                .setNegativeButton("暂不", (d, w) -> prefs.edit()
-                        .putBoolean("restore_ignored_" + current, true).apply())
-                .show();
-    }
-
-    /** 后台把备份解压回 rootfs，完成后刷新 Web UI 配置 */
-    private void doRestore(String ref) {
-        Toast.makeText(this, "正在恢复数据，请稍候…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            boolean ok = BackupManager.restoreSnapshotToRootfs(this, HarnessController.get(this), ref);
+            String fp = Integer.toHexString(key.toString().hashCode());
+            final android.content.SharedPreferences sp = getSharedPreferences(
+                    "deepseekharness", MODE_PRIVATE);
+            if (fp.equals(sp.getString("runtime_hint_fp", ""))) return;   // 这批已经提过
             runOnUiThread(() -> {
-                if (ok) {
-                    HarnessController.get(this).bumpWebEpoch();
-                    // prefs 里 last_version 是新版基线，标记已恢复过，避免再次弹出
-                    String cur = currentVersionName();
-                    if (cur != null) {
-                        getSharedPreferences("deepseekharness", MODE_PRIVATE)
-                                .edit().putBoolean("restore_ignored_" + cur, true).apply();
-                    }
-                    Toast.makeText(this, "数据已恢复", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "恢复失败：备份可能已损坏或环境未就绪", Toast.LENGTH_LONG).show();
-                }
+                if (isFinishing() || isDestroyed()) return;
+                new AlertDialog.Builder(this)
+                        .setTitle("有脚本更新可用")
+                        .setMessage(probe.updated + " 个脚本有新版本（合计通常只有几十 KB，"
+                                + "不用重下整个应用）。\n\n"
+                                + "到「配置」页点「检查脚本更新」即可查看具体改了哪些文件并更新。\n"
+                                + "不更新也能正常使用。")
+                        .setPositiveButton("知道了", (d, w) -> sp.edit()
+                                .putString("runtime_hint_fp", fp).apply())
+                        .setNegativeButton("不再提示这批", (d, w) -> sp.edit()
+                                .putString("runtime_hint_fp", fp).apply())
+                        .show();
             });
-        }).start();
+        } catch (Throwable e) {
+            android.util.Log.w("DSHA", "脚本更新检查失败（忽略）: " + e);
+        }
     }
 
     // ================= 备份提醒 =================
@@ -368,7 +518,13 @@ public class MainActivity extends AppCompatActivity {
             String path = BackupManager.backupToExternal(this, HarnessController.get(this));
             runOnUiThread(() -> {
                 if (path == null) {
-                    Toast.makeText(this, "备份失败：环境可能未安装或空间不足", Toast.LENGTH_LONG).show();
+                    // 别再猜原因：BackupManager 已经把真实失败原因记下来了
+                    String why = BackupManager.lastError();
+                    new AlertDialog.Builder(this)
+                            .setTitle("备份失败")
+                            .setMessage(why.isEmpty() ? "未知原因，请查看 logcat" : why)
+                            .setPositiveButton("知道了", null)
+                            .show();
                     return;
                 }
                 new AlertDialog.Builder(this)

@@ -3,8 +3,9 @@
 # offline-provision.sh — 在 arm64 rootfs（chroot / proot）内
 # 预装 deepseek-harness 运行环境，产出「解压即用」的 rootfs。
 #
-# 默认装 RC6（@deepseek-ai/dsh@0.1.0-rc.6），与 App 默认开关
-# use_rc6=true 对齐；RC6 失败再回退源码构建。
+# 默认装 rc.2（@deepseek-ai/dsh@0.1.1-rc.2，2026-08-21 发布），
+# 与 App 在线安装（@rc 跟随最新）对齐；rc.8 失败再回退源码构建。
+# 升级 rc 版本时同步改 DSH_VERSION 常量即可。
 #
 # 环境变量：
 #   GITHUB_ACTIONS=true  → 官方源优先（GitHub runner 在海外）
@@ -12,6 +13,8 @@
 # ============================================================
 set -euo pipefail
 
+# dsh 版本（pin 到具体 rc，保证离线包可复现；与 App 在线 @rc 策略解耦）
+DSH_VERSION="${DSH_VERSION:-0.1.1-rc.2}"
 WORKDIR="${WORKDIR:-deepseek-harness}"
 IN_CI="${GITHUB_ACTIONS:-}"
 KEEP_CA="${DSHA_KEEP_CA:-}"
@@ -41,17 +44,17 @@ command -v python >/dev/null 2>&1 || ln -sf /usr/bin/python3 /usr/bin/python || 
 
 echo "==> [3/8] 安装 Node.js v24.19.0"
 if [ ! -x /usr/local/bin/node ]; then
-  cd /tmp
-  rm -f node.tar.xz
+  mkdir -p /tmp 2>/dev/null || true
+  rm -f /tmp/node.tar.xz
   if [ -n "$IN_CI" ]; then
-    curl -fSL --retry 3 https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o node.tar.xz \
-      || curl -fSL --retry 3 https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o node.tar.xz
+    curl -fSL --retry 3 https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o /tmp/node.tar.xz \
+      || curl -fSL --retry 3 https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o /tmp/node.tar.xz
   else
-    curl -kfsSL --retry 3 https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o node.tar.xz \
-      || curl -kfsSL --retry 3 https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o node.tar.xz
+    curl -kfsSL --retry 3 https://npmmirror.com/mirrors/node/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o /tmp/node.tar.xz \
+      || curl -kfsSL --retry 3 https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz -o /tmp/node.tar.xz
   fi
-  tar -xJf node.tar.xz -C /usr/local --strip-components=1
-  rm -f node.tar.xz
+  tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+  rm -f /tmp/node.tar.xz
 fi
 node -v && npm -v
 
@@ -65,6 +68,11 @@ else
 fi
 command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11.7.0
 command -v node-gyp >/dev/null 2>&1 || npm install -g node-gyp
+# 会话修复自愈需要 zstandard（解压 session.jsonl.zstd）：
+# 有 pip 就直接装，装不上不阻塞（自愈时会再尝试）
+if command -v pip >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1; then
+  python3 -m pip install --break-system-packages -q zstandard 2>/dev/null || python3 -m pip install -q zstandard 2>/dev/null || true
+fi
 pnpm -v
 node-gyp --version || true
 
@@ -103,49 +111,28 @@ build_pty() {
   [ -f "$dir/build/Release/pty.node" ] || [ -f "$dir/prebuilds/linux-arm64/pty.node" ]
 }
 
-echo "==> [5/8] 安装 @deepseek-ai/dsh@0.1.0-rc.6（App 默认 RC6）"
+echo "==> [5/8] 安装 @deepseek-ai/dsh@${DSH_VERSION}（App 默认 dsh 版本，失败即停不 clone）"
 install_headers
-RC6_OK=0
+RC_OK=0
 npm config set allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs --location=user 2>/dev/null || true
-if npm install -g @deepseek-ai/dsh@0.1.0-rc.6 --force; then
+if npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" --force; then
   NP=$(find /usr/local/lib/node_modules -maxdepth 8 -path '*/node-pty' -type d 2>/dev/null | head -1)
   if build_pty "$NP"; then
-    RC6_OK=1
-    echo "RC6 + node-pty 就绪"
+    RC_OK=1
+    echo "dsh ${DSH_VERSION} + node-pty 就绪"
   else
-    echo "WARN: RC6 已装但 node-pty 编译失败，尝试源码回退"
+    # node-pty 编译失败不再 fallback clone（手机/clone 易留空源码）：
+    # 尝试 prebuilds 或直接失败
+    echo "ERROR: dsh ${DSH_VERSION} 已装但 node-pty 编译失败，请检查工具链后重试"
+    exit 1
   fi
 else
-  echo "WARN: npm 安装 RC6 失败，回退源码构建"
+  echo "ERROR: npm 安装 dsh ${DSH_VERSION} 失败（网络/镜像），请检查后重试"
+  exit 1
 fi
 
-if [ "$RC6_OK" != 1 ]; then
-  echo "==> [5b/8] 回退：克隆 deepseek-harness 源码并构建"
-  cd /root
-  rm -rf "${WORKDIR}"
-  git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git "${WORKDIR}" \
-    || git clone --depth 1 https://gitclone.com/github.com/deepseek-ai/deepseek-harness.git "${WORKDIR}" \
-    || {
-      curl -fSL --retry 3 -m 300 https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main -o dsh-src.tar.gz
-      tar -xzf dsh-src.tar.gz
-      mv deepseek-harness-main "${WORKDIR}"
-      rm -f dsh-src.tar.gz
-    }
-  cd /root/"${WORKDIR}"
-  grep -q 'onlyBuiltDependencies' pnpm-workspace.yaml 2>/dev/null || \
-    printf '\nonlyBuiltDependencies:\n  - node-pty\n' >> pnpm-workspace.yaml
-  pnpm install
-  if [ -f package.json ] && grep -q '"build"' package.json; then
-    pnpm run build || echo "WARN: pnpm run build 失败，若 lib/bin.js 已存在仍可继续"
-  fi
-  NP=$(ls -d node_modules/.pnpm/node-pty@*/node_modules/node-pty 2>/dev/null | head -1 || true)
-  build_pty "$NP" || echo "WARN: 源码树 node-pty 编译失败"
-  if [ -f /root/"${WORKDIR}"/apps/cli/lib/bin.js ]; then
-    ln -sf /root/"${WORKDIR}"/apps/cli/lib/bin.js /usr/local/bin/dsh
-    chmod +x /usr/local/bin/dsh 2>/dev/null || true
-  fi
-fi
-
+# （源码回退已移除：npm 失败即 exit 1，避免手机 clone 失败留下空源码目录。
+#   如需源码模式请直接 clone 仓库自行构建。）
 echo "==> [6/8] 应用补丁"
 cd /root
 if [ -d /root/"${WORKDIR}"/.git ]; then
@@ -163,6 +150,9 @@ fi
 if [ -f /root/patches/webui-polyfill.sh ]; then
   bash /root/patches/webui-polyfill.sh || true
 fi
+if [ -f /root/patches/webui-origin-port-patch.sh ]; then
+  bash /root/patches/webui-origin-port-patch.sh || true
+fi
 
 echo "==> [7/8] 安装危险命令确认包装器"
 if [ -f /root/patches/rootfs-confirm-install.sh ]; then
@@ -170,6 +160,13 @@ if [ -f /root/patches/rootfs-confirm-install.sh ]; then
 fi
 # 空的内置插件快照，避免 App 误把后续用户插件当自带
 touch /root/dsha-builtin.txt
+
+echo "==> [7.5/8] 预置 DSHA 内置插件（mobile-nav / device-shell-guide / task-notifier，解压即用）"
+if [ -f /root/patches/provision-builtin-plugins.sh ]; then
+  bash /root/patches/provision-builtin-plugins.sh
+else
+  echo "  WARN: 未找到 provision-builtin-plugins.sh（旧构建器？跳过预置，App 启动时会运行时注入）"
+fi
 
 echo "==> [8/8] 校验"
 node -v

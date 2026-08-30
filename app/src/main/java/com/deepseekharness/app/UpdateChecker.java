@@ -13,10 +13,9 @@ import java.nio.charset.StandardCharsets;
 public final class UpdateChecker {
 
     private static final String[] URLS = {
-            // 直连 GitHub API（魔法环境可用）
+            // 只以 GitHub Releases latest 为准（不要用 main/VERSION——它只反映代码
+            // 当前版本不代表已发布，会导致版本判断错乱）
             "https://api.github.com/repos/qiannianhuanxiang/DSHA/releases/latest",
-            // jsdelivr CDN 读仓库 VERSION 文件（国内直连稳定）
-            "https://cdn.jsdelivr.net/gh/qiannianhuanxiang/DSHA@main/VERSION",
             // 代理 fallback（API 可能被代理拒，放最后兜底）
             "https://ghfast.top/https://api.github.com/repos/qiannianhuanxiang/DSHA/releases/latest"
     };
@@ -31,7 +30,8 @@ public final class UpdateChecker {
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setConnectTimeout(8000);
                 conn.setReadTimeout(8000);
-                conn.setRequestProperty("User-Agent", "DSHA/1.0.2");
+                // UA 取构建版本，避免每次发版都要手工同步这里（曾长期停在 1.1.4）
+                conn.setRequestProperty("User-Agent", "DSHA/" + BuildConfig.VERSION_NAME);
                 conn.setRequestProperty("Accept", "application/vnd.github+json");
                 int code = conn.getResponseCode();
                 if (code != 200) {
@@ -82,11 +82,27 @@ public final class UpdateChecker {
         return false;
     }
 
+    /** 取版本段的数值。
+     *
+     *  原来是 replaceAll("[^0-9]", "") —— 把段里所有非数字**删掉再拼起来**，
+     *  于是预发布号被拼成了一个巨大的数：
+     *      1.1.7-rc81  →  段 "7-rc81"  →  "781"  →  当成 1.1.781
+     *  这个版本比任何正式版都「新」，用户从此**永远收不到更新提示**。
+     *  我们真用过 1.1.7-rc81 这种版本名，也正在用 1.1.7-fix。
+     *
+     *  改成只取前导数字，遇到非数字就停：
+     *      "7-rc81" → 7      "7-fix" → 7      "9" → 9
+     *  这样带后缀的版本与同号正式版比较结果相等（不会互相提示更新），
+     *  与更高版本比较则正常判新。 */
     private static int parseInt(String s) {
+        if (s == null) return 0;
+        int i = 0;
+        while (i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9') i++;
+        if (i == 0) return 0;
         try {
-            return Integer.parseInt(s.replaceAll("[^0-9]", ""));
+            return Integer.parseInt(s.substring(0, i));
         } catch (Exception e) {
-            return 0;
+            return 0;   // 段长到溢出 int：当 0 处理，不如实报也不误判成最新
         }
     }
 }
